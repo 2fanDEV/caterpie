@@ -4,6 +4,7 @@ use winit::event_loop::EventLoop;
 
 mod app;
 mod engine;
+mod utils;
 
 fn main() {
     let mut app = App::default();
