@@ -4,22 +4,19 @@ use super::configuration::Configuration;
 
 
 #[derive(Default)]
-pub struct Engine<'a>{
-    configuration: Option<Configuration<'a>>
+pub struct Engine{
+    configuration: Option<Configuration>
 }
 
 
-impl <'a> Engine <'a> {
+impl  Engine {
 
-    pub fn init(window: &'a Window) -> Result<Engine, &'a str> {
-        let configuration : Configuration<'a> = Configuration::default(window);
-
+    pub fn init(window: &Window) -> Result<Engine,  &str> {
+        let configuration : Configuration = Configuration::default(window);
         Ok(Self{configuration: Some(configuration)})
     }
 
-    fn create_instance(&self) {
 
-    }
 
 
 }

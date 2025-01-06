@@ -3,15 +3,16 @@ use winit::{application::ApplicationHandler, dpi::LogicalSize, window::{self, Wi
 use crate::engine::engine::Engine;
 
 #[derive(Default)]
-pub struct App { 
-    window: Option<Window>
+pub struct App{
+    window: Option<Window>,
+    engine: Option<Engine>,
 }
 
 impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) { 
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let window_attributes = WindowAttributes::default().with_inner_size(LogicalSize::new(1920,1080));
         self.window = Some(event_loop.create_window(window_attributes).unwrap());
-        let engine = Engine::init(&self.window.as_ref().unwrap()).unwrap();
+        self.engine = Some(Engine::init(&self.window.as_ref().unwrap()).unwrap());
     }
 
     fn window_event(
@@ -20,6 +21,9 @@ impl ApplicationHandler for App {
         window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
-        
+
     }
 }
+
+
+
