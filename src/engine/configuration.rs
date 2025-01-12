@@ -4,14 +4,18 @@ use ash::{
     vk::{
         ApplicationInfo, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
         DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
-        DebugUtilsMessengerEXT, InstanceCreateFlags, InstanceCreateInfo, PhysicalDevice,
-        PhysicalDeviceType, QueueFlags, EXT_DEBUG_UTILS_NAME,
-        KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME, KHR_PORTABILITY_ENUMERATION_NAME,
+        DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, InstanceCreateFlags,
+        InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, Queue, QueueFlags, SurfaceKHR,
+        EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME,
+        KHR_PORTABILITY_ENUMERATION_NAME,
     },
-    Entry, Instance,
+    Device, Entry, Instance,
 };
 use log::{error, info, warn};
-use winit::{raw_window_handle::HasDisplayHandle, window::Window};
+use winit::{
+    raw_window_handle::{HasDisplayHandle, HasWindowHandle},
+    window::Window,
+};
 
 #[allow(clippy::pedantic)]
 
@@ -27,34 +31,57 @@ impl Configuration {
         ConfigurationBuilder::default()
             .create_instance(window)
             .unwrap()
+            .create_surface(window)
+            .unwrap()
             .pick_physical_device()
+            .unwrap()
+            .find_logical_device()
             .unwrap()
             .build()
             .unwrap()
     }
 }
 
+#[derive(Default)]
 pub struct ConfigurationBuilder {
     vulkan_entry: Option<Entry>,
     instance: Option<Instance>,
+    physical_device: Option<PhysicalDevice>,
+    physical_device_features: Option<PhysicalDeviceFeatures>,
+    queue_family_indices: Option<QueueFamilyIndices>,
+    logical_device: Option<Device>,
+    graphics_queue: Option<Queue>,
+    presentation_queue: Option<Queue>,
+    surface_instance: Option<ash::khr::surface::Instance>,
+    surface: Option<SurfaceKHR>,
+
     debug_instance: Option<ash::ext::debug_utils::Instance>,
     debug_messenger: Option<DebugUtilsMessengerEXT>,
 }
 
-#[derive(Default, Debug)]
-struct QueueFamilyIndices(Option<u32>);
+#[derive(Default, Debug, Clone, Copy)]
+struct QueueFamilyIndices {
+    graphics_queue: Option<u32>,
+    presentation_queue: Option<u32>,
+}
 
 impl QueueFamilyIndices {
     fn graphics_family_index(&mut self, index: u32) {
-        self.0 = Some(index);
+        self.graphics_queue = Some(index);
+    }
+
+    fn presentation_queue(&mut self, index: u32) {
+        self.presentation_queue = Some(index);
     }
 
     fn is_complete(&self) -> bool {
-        self.0.is_some()
+        self.graphics_queue.is_some() && self.presentation_queue.is_some()
     }
 
     fn find_queue_family_indices(
         instance: Instance,
+        surface_instance: ash::khr::surface::Instance,
+        surface: SurfaceKHR,
         physical_device: PhysicalDevice,
     ) -> Option<QueueFamilyIndices> {
         let mut queue_family_indices = QueueFamilyIndices::default();
@@ -70,22 +97,24 @@ impl QueueFamilyIndices {
                 None => return Some(queue_family_indices),
             }
 
+            let physical_device_surface_support = surface_instance
+                .get_physical_device_surface_support(
+                    physical_device,
+                    queue_idx.unwrap().0 as u32,
+                    surface,
+                )
+                .unwrap();
+            if physical_device_surface_support {
+                queue_family_indices.presentation_queue(queue_idx.unwrap().0 as u32);
+            }
+
             Some(queue_family_indices)
         }
     }
 }
 
 impl ConfigurationBuilder {
-    fn default() -> Self {
-        Self {
-            vulkan_entry: Default::default(),
-            instance: Default::default(),
-            debug_instance: Default::default(),
-            debug_messenger: Default::default(),
-        }
-    }
-
-    pub fn create_instance(&mut self, window: &Window) -> Result<&ConfigurationBuilder, &str> {
+    pub fn create_instance(&mut self, window: &Window) -> Result<&mut ConfigurationBuilder, &str> {
         unsafe {
             self.vulkan_entry =
                 Some(Entry::load().expect("Failed to find vulkan library on this machine"));
@@ -161,7 +190,27 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    pub fn pick_physical_device(&self) -> Result<&ConfigurationBuilder, &str> {
+    fn create_surface(&mut self, window: &Window) -> Result<&mut ConfigurationBuilder, &str> {
+        self.surface_instance = Some(ash::khr::surface::Instance::new(
+            self.vulkan_entry.as_ref().unwrap(),
+            self.instance.as_ref().unwrap(),
+        ));
+        unsafe {
+            self.surface = Some(
+                ash_window::create_surface(
+                    self.vulkan_entry.as_ref().unwrap(),
+                    self.instance.as_ref().unwrap(),
+                    window.display_handle().unwrap().as_raw(),
+                    window.window_handle().unwrap().as_raw(),
+                    None,
+                )
+                .unwrap(),
+            );
+        }
+        Ok(self)
+    }
+
+    fn pick_physical_device(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
         unsafe {
             let instance = self.instance.as_ref().unwrap();
             let physical_devices = instance
@@ -175,6 +224,7 @@ impl ConfigurationBuilder {
                 error!("No physical device has been found, abort initialization!");
                 return Err("Aborting initialization as there were no physical devices found");
             }
+            self.physical_device = Some(physical_device.unwrap()).copied();
 
             Ok(self)
         }
@@ -183,6 +233,8 @@ impl ConfigurationBuilder {
     pub fn is_device_suitable(&self, physical_device: &PhysicalDevice) -> bool {
         let queue_family_indices = QueueFamilyIndices::find_queue_family_indices(
             self.instance.as_ref().unwrap().clone(),
+            self.surface_instance.as_ref().unwrap().clone(),
+            self.surface.unwrap(),
             *physical_device,
         )
         .expect("Failed to gather queue family indices");
@@ -213,6 +265,59 @@ impl ConfigurationBuilder {
             }
         };
         Err("Validation Layers are not present on this machine")
+    }
+
+    fn find_logical_device(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+        let instance = self.instance.as_ref().unwrap();
+        self.queue_family_indices = QueueFamilyIndices::find_queue_family_indices(
+            instance.clone(),
+            self.surface_instance.as_ref().unwrap().clone(),
+            self.surface.as_ref().unwrap().clone(),
+            self.physical_device
+                .expect("Couldn't find appropriate queue family indices"),
+        );
+        unsafe {
+            let queue_priorities = [1.0];
+            let queue_family_indices = self.queue_family_indices.as_ref().unwrap();
+            let queue_indices = [
+                queue_family_indices.graphics_queue.unwrap(),
+                queue_family_indices.presentation_queue.unwrap(),
+            ];
+
+            self.physical_device_features =
+                Some(instance.get_physical_device_features(self.physical_device.unwrap()));
+
+            let mut device_queue_create_infos = Vec::new();
+            for queue_index in queue_indices {
+                device_queue_create_infos.push(
+                    DeviceQueueCreateInfo::default()
+                        .queue_family_index(queue_index)
+                        .queue_priorities(&queue_priorities),
+                );
+            }
+
+            let device_create_info = DeviceCreateInfo::default()
+                .queue_create_infos(&device_queue_create_infos)
+                .enabled_features(self.physical_device_features.as_ref().unwrap());
+            self.logical_device = Some(
+                instance
+                    .create_device(self.physical_device.unwrap(), &device_create_info, None)
+                    .unwrap(),
+            );
+
+            self.graphics_queue = self.find_device_queue(queue_family_indices.graphics_queue.unwrap());
+            self.presentation_queue = self.find_device_queue(queue_family_indices.presentation_queue.unwrap());
+        }
+        Ok(self)
+    }
+
+    fn find_device_queue(&mut self, queue_family_index: u32) -> Option<Queue> {
+        unsafe {
+            Some(self.logical_device.as_ref().unwrap().get_device_queue(
+               queue_family_index, 
+                    0,
+            ))
+        }
     }
 
     unsafe extern "system" fn debug_callback(
