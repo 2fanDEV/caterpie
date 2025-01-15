@@ -2,19 +2,13 @@ use std::ffi::{c_void, CStr, CString};
 
 use ash::{
     vk::{
-        ApplicationInfo, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
-        DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
-        DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, ExtensionProperties,
-        InstanceCreateFlags, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, Queue,
-        QueueFlags, SurfaceKHR, EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME,
-        KHR_PORTABILITY_ENUMERATION_NAME, KHR_SWAPCHAIN_NAME,
+        ApplicationInfo, ColorSpaceKHR, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, ExtensionProperties, Extent2D, Format, InstanceCreateFlags, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, PresentModeKHR, Queue, QueueFlags, SurfaceFormatKHR, SurfaceKHR, EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME, KHR_PORTABILITY_ENUMERATION_NAME, KHR_SWAPCHAIN_NAME
     },
     Device, Entry, Instance,
 };
 use log::{error, info, warn};
 use winit::{
-    raw_window_handle::{HasDisplayHandle, HasWindowHandle},
-    window::Window,
+    raw_window_handle::{HasDisplayHandle, HasWindowHandle}, raw_window_handle_05::HasRawWindowHandle, window::Window
 };
 
 #[allow(clippy::pedantic)]
@@ -37,6 +31,8 @@ impl Configuration {
             .unwrap()
             .create_logical_device()
             .unwrap()
+            .create_swap_chain()
+            .unwrap()
             .build()
             .unwrap()
     }
@@ -55,7 +51,14 @@ pub struct ConfigurationBuilder {
     device_extensions: Vec<*const i8>,
     surface_instance: Option<ash::khr::surface::Instance>,
     surface: Option<SurfaceKHR>,
+    surface_format: Option<SurfaceFormatKHR>,
+    present_mode: Option<PresentModeKHR>,
+    extent: Option<Extent2D>,
     swapchain_support_details: Option<SwapchainSupportDetails>,
+
+
+    width: Option<u32>,
+    height: Option<u32>,
 
     debug_instance: Option<ash::ext::debug_utils::Instance>,
     debug_messenger: Option<DebugUtilsMessengerEXT>,
@@ -116,7 +119,7 @@ impl QueueFamilyIndices {
 }
 
 #[derive(Clone)]
-struct SwapchainSupportDetails { 
+struct SwapchainSupportDetails {
     capabilities: ash::vk::SurfaceCapabilitiesKHR,
     formats: Vec<ash::vk::SurfaceFormatKHR>,
     present_modes: Vec<ash::vk::PresentModeKHR>,
@@ -124,20 +127,20 @@ struct SwapchainSupportDetails {
 
 impl SwapchainSupportDetails {
     fn query_swapchain_support(
-        instance: Instance,
-        surface_instance: ash::khr::surface::Instance,
-        surface: SurfaceKHR,
-        physical_device: PhysicalDevice,
+        instance: &Instance,
+        surface_instance: &ash::khr::surface::Instance,
+        surface: &SurfaceKHR,
+        physical_device: &PhysicalDevice,
     ) -> SwapchainSupportDetails {
         unsafe {
             let capabilities = surface_instance
-                .get_physical_device_surface_capabilities(physical_device, surface)
+                .get_physical_device_surface_capabilities(*physical_device, *surface)
                 .unwrap();
             let formats = surface_instance
-                .get_physical_device_surface_formats(physical_device, surface)
+                .get_physical_device_surface_formats(*physical_device, *surface)
                 .unwrap();
             let present_modes = surface_instance
-                .get_physical_device_surface_present_modes(physical_device, surface)
+                .get_physical_device_surface_present_modes(*physical_device, *surface)
                 .unwrap();
             SwapchainSupportDetails {
                 capabilities,
@@ -146,11 +149,48 @@ impl SwapchainSupportDetails {
             }
         }
     }
+
+    fn choose_swap_chain_format(&self) -> SurfaceFormatKHR {
+        let surface_format_khr = self.formats.iter()
+            .find(|format| format.format == Format::B8G8R8_SRGB
+                 && format.color_space.eq(&ColorSpaceKHR::SRGB_NONLINEAR));
+
+        if surface_format_khr.is_some() {
+            return *surface_format_khr.unwrap();
+        }
+
+
+        self.formats[0]
+    }
+
+    fn choose_present_mode(&self) -> PresentModeKHR {
+        let present_mode = self.present_modes.iter().find(|&present_mode| *present_mode == PresentModeKHR::MAILBOX );
+        if present_mode.is_some() {
+            return *present_mode.unwrap();
+        }
+
+        return PresentModeKHR::FIFO;
+    }
+
+    fn choose_swap_extent(&self, buffer_width: u32, buffer_height: u32) -> Extent2D {
+       if self.capabilities.current_extent.width != u32::max_value() {
+            return self.capabilities.current_extent;
+       } else {
+            let mut extent_2d= Extent2D::default().width(buffer_width).height(buffer_height);
+            extent_2d.width = extent_2d.width.clamp(self.capabilities.min_image_extent.width, self.capabilities.max_image_extent.width);
+            extent_2d.height = extent_2d.height.clamp(self.capabilities.min_image_extent.height,
+                self.capabilities.max_image_extent.height);
+            return extent_2d;
+       }
+    }
 }
 
 impl ConfigurationBuilder {
     pub fn create_instance(&mut self, window: &Window) -> Result<&mut ConfigurationBuilder, &str> {
         unsafe {
+            self.width = Some(1920); //TODO!
+            self.height = Some(1080); //TODO!
+
             self.vulkan_entry =
                 Some(Entry::load().expect("Failed to find vulkan library on this machine"));
             let application_version = 1;
@@ -277,14 +317,14 @@ impl ConfigurationBuilder {
             *physical_device,
         )
         .expect("Failed to gather queue family indices");
-        let mut adequate_swapchain = false; 
+        let mut adequate_swapchain = false;
         let extensions_enabled = self.check_device_extension_support(physical_device);
         if extensions_enabled {
             let swapchain_support_details = SwapchainSupportDetails::query_swapchain_support(
-                self.instance.as_ref().unwrap().clone(),
-                self.surface_instance.as_ref().unwrap().clone(),
-                self.surface.unwrap(),
-                *physical_device,
+                self.instance.as_ref().unwrap(),
+                self.surface_instance.as_ref().unwrap(),
+                self.surface.as_ref().unwrap(),
+                physical_device,
             );
             self.swapchain_support_details = Some(swapchain_support_details.clone());
             adequate_swapchain = !swapchain_support_details.formats.is_empty() && !swapchain_support_details.present_modes.is_empty();
@@ -323,7 +363,7 @@ impl ConfigurationBuilder {
             }
         }
 
-        if flag { 
+        if flag {
             self.device_extensions.push(KHR_SWAPCHAIN_NAME.as_ptr());
         }
         flag
@@ -410,6 +450,19 @@ impl ConfigurationBuilder {
                     .get_device_queue(queue_family_index, 0),
             )
         }
+    }
+
+    fn create_swap_chain(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+        let swapchain_support_details = SwapchainSupportDetails::query_swapchain_support(self.instance.as_ref().unwrap(),
+        self.surface_instance.as_ref().unwrap(),
+        self.surface.as_ref().unwrap(),
+        self.physical_device.as_ref().unwrap());
+
+        self.surface_format = Some(swapchain_support_details.choose_swap_chain_format());
+        self.present_mode = Some(swapchain_support_details.choose_present_mode());
+        self.extent = Some(swapchain_support_details.choose_swap_extent(self.width.unwrap(),self.height.unwrap()));
+
+        Ok(self)
     }
 
     unsafe extern "system" fn debug_callback(
