@@ -2,7 +2,15 @@ use std::ffi::{c_void, CStr, CString};
 
 use ash::{
     vk::{
-        ApplicationInfo, ColorSpaceKHR, CompositeAlphaFlagsKHR, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, ExtensionProperties, Extent2D, Format, ImageUsageFlags, InstanceCreateFlags, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, PresentModeKHR, Queue, QueueFlags, SharingMode, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME, KHR_PORTABILITY_ENUMERATION_NAME, KHR_SWAPCHAIN_NAME
+        ApplicationInfo, ColorSpaceKHR, CompositeAlphaFlagsKHR, DebugUtilsMessageSeverityFlagsEXT,
+        DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT,
+        DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DeviceCreateInfo,
+        DeviceQueueCreateInfo, ExtensionProperties, Extent2D, Format, ImageUsageFlags,
+        InstanceCreateFlags, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures,
+        PresentModeKHR, Queue, QueueFlags, SharingMode, SurfaceFormatKHR, SurfaceKHR,
+        SwapchainCreateInfoKHR, SwapchainKHR, EXT_DEBUG_UTILS_NAME,
+        KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME, KHR_PORTABILITY_ENUMERATION_NAME,
+        KHR_SWAPCHAIN_NAME,
     },
     Device, Entry, Instance,
 };
@@ -537,14 +545,13 @@ impl ConfigurationBuilder {
             .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
             .present_mode(self.present_mode.unwrap())
             .clipped(true);
-//          .old_swapchain(...);
+        //          .old_swapchain(...);
 
-        self.swapchain_device = Some(ash::khr::swapchain::Device::new(self.instance.as_ref().unwrap(), self.logical_device.as_ref().unwrap()));
-        unsafe {
+        self.swapchain_device = Some(ash::khr::swapchain::Device::new(
+            self.instance.as_ref().unwrap(),
+            self.logical_device.as_ref().unwrap(),
+        ));
 
-        self.swapchain = Some(self.swapchain_device.as_ref().unwrap().create_swapchain(&swapchain_create_info, None).unwrap());
-        
-        }
         if queue_families[0] != queue_families[1] {
             swapchain_create_info = swapchain_create_info
                 .image_sharing_mode(SharingMode::CONCURRENT)
@@ -552,6 +559,16 @@ impl ConfigurationBuilder {
         } else {
             swapchain_create_info =
                 swapchain_create_info.image_sharing_mode(SharingMode::EXCLUSIVE);
+        }
+
+        unsafe {
+            self.swapchain = Some(
+                self.swapchain_device
+                    .as_ref()
+                    .unwrap()
+                    .create_swapchain(&swapchain_create_info, None)
+                    .unwrap(),
+            );
         }
 
         Ok(self)
