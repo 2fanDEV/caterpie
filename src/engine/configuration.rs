@@ -2,13 +2,15 @@ use std::ffi::{c_void, CStr, CString};
 
 use ash::{
     vk::{
-        ApplicationInfo, ColorSpaceKHR, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, ExtensionProperties, Extent2D, Format, InstanceCreateFlags, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, PresentModeKHR, Queue, QueueFlags, SurfaceFormatKHR, SurfaceKHR, EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME, KHR_PORTABILITY_ENUMERATION_NAME, KHR_SWAPCHAIN_NAME
+        ApplicationInfo, ColorSpaceKHR, CompositeAlphaFlagsKHR, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, ExtensionProperties, Extent2D, Format, ImageUsageFlags, InstanceCreateFlags, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, PresentModeKHR, Queue, QueueFlags, SharingMode, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME, KHR_PORTABILITY_ENUMERATION_NAME, KHR_SWAPCHAIN_NAME
     },
     Device, Entry, Instance,
 };
 use log::{error, info, warn};
 use winit::{
-    raw_window_handle::{HasDisplayHandle, HasWindowHandle}, raw_window_handle_05::HasRawWindowHandle, window::Window
+    raw_window_handle::{HasDisplayHandle, HasWindowHandle},
+    raw_window_handle_05::HasRawWindowHandle,
+    window::Window,
 };
 
 #[allow(clippy::pedantic)]
@@ -54,8 +56,10 @@ pub struct ConfigurationBuilder {
     surface_format: Option<SurfaceFormatKHR>,
     present_mode: Option<PresentModeKHR>,
     extent: Option<Extent2D>,
+    image_count: u32,
     swapchain_support_details: Option<SwapchainSupportDetails>,
-
+    swapchain_device: Option<ash::khr::swapchain::Device>,
+    swapchain: Option<SwapchainKHR>,
 
     width: Option<u32>,
     height: Option<u32>,
@@ -151,20 +155,23 @@ impl SwapchainSupportDetails {
     }
 
     fn choose_swap_chain_format(&self) -> SurfaceFormatKHR {
-        let surface_format_khr = self.formats.iter()
-            .find(|format| format.format == Format::B8G8R8_SRGB
-                 && format.color_space.eq(&ColorSpaceKHR::SRGB_NONLINEAR));
+        let surface_format_khr = self.formats.iter().find(|format| {
+            format.format == Format::B8G8R8_SRGB
+                && format.color_space.eq(&ColorSpaceKHR::SRGB_NONLINEAR)
+        });
 
         if surface_format_khr.is_some() {
             return *surface_format_khr.unwrap();
         }
 
-
         self.formats[0]
     }
 
     fn choose_present_mode(&self) -> PresentModeKHR {
-        let present_mode = self.present_modes.iter().find(|&present_mode| *present_mode == PresentModeKHR::MAILBOX );
+        let present_mode = self
+            .present_modes
+            .iter()
+            .find(|&present_mode| *present_mode == PresentModeKHR::MAILBOX);
         if present_mode.is_some() {
             return *present_mode.unwrap();
         }
@@ -173,15 +180,22 @@ impl SwapchainSupportDetails {
     }
 
     fn choose_swap_extent(&self, buffer_width: u32, buffer_height: u32) -> Extent2D {
-       if self.capabilities.current_extent.width != u32::max_value() {
+        if self.capabilities.current_extent.width != u32::max_value() {
             return self.capabilities.current_extent;
-       } else {
-            let mut extent_2d= Extent2D::default().width(buffer_width).height(buffer_height);
-            extent_2d.width = extent_2d.width.clamp(self.capabilities.min_image_extent.width, self.capabilities.max_image_extent.width);
-            extent_2d.height = extent_2d.height.clamp(self.capabilities.min_image_extent.height,
-                self.capabilities.max_image_extent.height);
+        } else {
+            let mut extent_2d = Extent2D::default()
+                .width(buffer_width)
+                .height(buffer_height);
+            extent_2d.width = extent_2d.width.clamp(
+                self.capabilities.min_image_extent.width,
+                self.capabilities.max_image_extent.width,
+            );
+            extent_2d.height = extent_2d.height.clamp(
+                self.capabilities.min_image_extent.height,
+                self.capabilities.max_image_extent.height,
+            );
             return extent_2d;
-       }
+        }
     }
 }
 
@@ -327,11 +341,12 @@ impl ConfigurationBuilder {
                 physical_device,
             );
             self.swapchain_support_details = Some(swapchain_support_details.clone());
-            adequate_swapchain = !swapchain_support_details.formats.is_empty() && !swapchain_support_details.present_modes.is_empty();
+            adequate_swapchain = !swapchain_support_details.formats.is_empty()
+                && !swapchain_support_details.present_modes.is_empty();
         }
 
         println!("{:?}", queue_family_indices);
-        queue_family_indices.is_complete() &&  extensions_enabled && adequate_swapchain
+        queue_family_indices.is_complete() && extensions_enabled && adequate_swapchain
     }
 
     fn check_device_extension_support(&mut self, physical_device: &PhysicalDevice) -> bool {
@@ -453,14 +468,91 @@ impl ConfigurationBuilder {
     }
 
     fn create_swap_chain(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
-        let swapchain_support_details = SwapchainSupportDetails::query_swapchain_support(self.instance.as_ref().unwrap(),
-        self.surface_instance.as_ref().unwrap(),
-        self.surface.as_ref().unwrap(),
-        self.physical_device.as_ref().unwrap());
+        self.swapchain_support_details = Some(SwapchainSupportDetails::query_swapchain_support(
+            self.instance.as_ref().unwrap(),
+            self.surface_instance.as_ref().unwrap(),
+            self.surface.as_ref().unwrap(),
+            self.physical_device.as_ref().unwrap(),
+        ));
 
-        self.surface_format = Some(swapchain_support_details.choose_swap_chain_format());
-        self.present_mode = Some(swapchain_support_details.choose_present_mode());
-        self.extent = Some(swapchain_support_details.choose_swap_extent(self.width.unwrap(),self.height.unwrap()));
+        self.surface_format = Some(
+            self.swapchain_support_details
+                .as_ref()
+                .unwrap()
+                .choose_swap_chain_format(),
+        );
+        self.present_mode = Some(
+            self.swapchain_support_details
+                .as_ref()
+                .unwrap()
+                .choose_present_mode(),
+        );
+        self.extent = Some(
+            self.swapchain_support_details
+                .as_ref()
+                .unwrap()
+                .choose_swap_extent(self.width.unwrap(), self.height.unwrap()),
+        );
+
+        self.image_count = self
+            .swapchain_support_details
+            .as_ref()
+            .unwrap()
+            .capabilities
+            .min_image_count
+            + 1;
+        let max_image_count = self
+            .swapchain_support_details
+            .as_ref()
+            .unwrap()
+            .capabilities
+            .max_image_count;
+        if max_image_count > 0 && self.image_count > max_image_count {
+            self.image_count = max_image_count;
+        }
+
+        let queue_families = [
+            self.queue_family_indices.unwrap().graphics_queue.unwrap(),
+            self.queue_family_indices
+                .unwrap()
+                .presentation_queue
+                .unwrap(),
+        ];
+
+        let mut swapchain_create_info = SwapchainCreateInfoKHR::default()
+            .surface(self.surface.unwrap())
+            .min_image_count(self.image_count)
+            .image_format(self.surface_format.unwrap().format)
+            .image_color_space(self.surface_format.unwrap().color_space)
+            .image_extent(self.extent.unwrap())
+            .image_array_layers(1)
+            .image_usage(ImageUsageFlags::COLOR_ATTACHMENT)
+            .pre_transform(
+                self.swapchain_support_details
+                    .as_ref()
+                    .unwrap()
+                    .capabilities
+                    .current_transform,
+            )
+            .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(self.present_mode.unwrap())
+            .clipped(true);
+//          .old_swapchain(...);
+
+        self.swapchain_device = Some(ash::khr::swapchain::Device::new(self.instance.as_ref().unwrap(), self.logical_device.as_ref().unwrap()));
+        unsafe {
+
+        self.swapchain = Some(self.swapchain_device.as_ref().unwrap().create_swapchain(&swapchain_create_info, None).unwrap());
+        
+        }
+        if queue_families[0] != queue_families[1] {
+            swapchain_create_info = swapchain_create_info
+                .image_sharing_mode(SharingMode::CONCURRENT)
+                .queue_family_indices(&queue_families);
+        } else {
+            swapchain_create_info =
+                swapchain_create_info.image_sharing_mode(SharingMode::EXCLUSIVE);
+        }
 
         Ok(self)
     }
