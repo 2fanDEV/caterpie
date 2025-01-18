@@ -1,18 +1,9 @@
-use std::ffi::{c_void, CStr, CString};
+use std::{ffi::{c_void, CStr, CString}, fs, io::Cursor, path::Path};
 
 use ash::{
-    vk::{
-        ApplicationInfo, ColorSpaceKHR, CompositeAlphaFlagsKHR, DebugUtilsMessageSeverityFlagsEXT,
-        DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT,
-        DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DeviceCreateInfo,
-        DeviceQueueCreateInfo, ExtensionProperties, Extent2D, Format, ImageUsageFlags,
-        InstanceCreateFlags, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures,
-        PresentModeKHR, Queue, QueueFlags, SharingMode, SurfaceFormatKHR, SurfaceKHR,
-        SwapchainCreateInfoKHR, SwapchainKHR, EXT_DEBUG_UTILS_NAME,
-        KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME, KHR_PORTABILITY_ENUMERATION_NAME,
-        KHR_SWAPCHAIN_NAME,
-    },
-    Device, Entry, Instance,
+    util::read_spv, vk::{
+        ApplicationInfo, ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, ExtensionProperties, Extent2D, Format, Image, ImageAspectFlags, ImageSubresource, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateFlags, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, PresentModeKHR, Queue, QueueFlags, SharingMode, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME, KHR_PORTABILITY_ENUMERATION_NAME, KHR_SWAPCHAIN_NAME
+    }, Device, Entry, Instance
 };
 use log::{error, info, warn};
 use winit::{
@@ -20,6 +11,8 @@ use winit::{
     raw_window_handle_05::HasRawWindowHandle,
     window::Window,
 };
+
+use crate::utils;
 
 #[allow(clippy::pedantic)]
 
@@ -34,15 +27,17 @@ impl Configuration {
     pub fn default(window: &Window) -> Configuration {
         ConfigurationBuilder::default()
             .create_instance(window)
-            .unwrap()
+            .expect("Failed to create instance")
             .create_surface(window)
-            .unwrap()
+            .expect("Failed to create surface")
             .pick_physical_device()
-            .unwrap()
+            .expect("Failed to pick physical device")
             .create_logical_device()
-            .unwrap()
+            .expect("Failed to create logical device")
             .create_swap_chain()
-            .unwrap()
+            .expect("Failed to create swapchain")
+            .create_swapchain_image_views()
+            .expect("Failed to create swapchain image views")
             .build()
             .unwrap()
     }
@@ -68,6 +63,8 @@ pub struct ConfigurationBuilder {
     swapchain_support_details: Option<SwapchainSupportDetails>,
     swapchain_device: Option<ash::khr::swapchain::Device>,
     swapchain: Option<SwapchainKHR>,
+    swapchain_images: Vec<Image>,
+    image_views: Vec<ImageView>,
 
     width: Option<u32>,
     height: Option<u32>,
@@ -567,10 +564,60 @@ impl ConfigurationBuilder {
                     .as_ref()
                     .unwrap()
                     .create_swapchain(&swapchain_create_info, None)
-                    .unwrap(),
+                    .expect("Failed to create swapchain"),
             );
-        }
 
+            info!("Swapchain created!");
+            self.swapchain_images = self
+                .swapchain_device
+                .as_ref()
+                .unwrap()
+                .get_swapchain_images(self.swapchain.unwrap())
+                .expect("Failed to retrieve swapchain images");
+        }
+            info!("Swapchain images retrieved");
+        Ok(self)
+    }
+
+    fn create_swapchain_image_views(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+        let device = self.logical_device.as_ref().unwrap();
+                  let component_mapping = ComponentMapping::default().r(ComponentSwizzle::IDENTITY)
+                 .g(ComponentSwizzle::IDENTITY)
+                 .b(ComponentSwizzle::IDENTITY)
+                 .a(ComponentSwizzle::IDENTITY);
+
+        let subresource_range = ImageSubresourceRange::default().aspect_mask(ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        self.image_views = self.swapchain_images.iter().map(|image| { 
+             let image_view_create_info = ImageViewCreateInfo::default()
+                .image(*image)
+                .view_type(ImageViewType::TYPE_2D)
+                .components(component_mapping)
+                .subresource_range(subresource_range);
+            unsafe { 
+            device.create_image_view(&image_view_create_info, None)
+                .expect("Failed to create image view")
+            }
+        }).collect::<Vec<ImageView>>();
+        Ok(self)
+    }
+
+    fn create_shader_modules(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+        let fragment_binding = utils::io::read_file("/assets/fragment.spv").unwrap();
+        let mut fragment_as_byte_arr = Cursor::new(&fragment_binding);
+        let mut fragment_spv: Vec<u32> = Vec::new();
+
+        let vertex_binding = utils::io::read_file("/assets/vertex.spv").unwrap();
+        let mut vertex_as_byte_arr = Cursor::new(vertex_binding);
+        let mut vertex_spv: Vec<u32> = Vec::new();
+
+        fragment_spv = read_spv(&mut fragment_as_byte_arr).expect("Failed to convert fragment shader to spv");
+        vertex_spv = read_spv(&mut vertex_as_byte_arr).expect("Failed to convert vertex shader to spv");
+    
         Ok(self)
     }
 
