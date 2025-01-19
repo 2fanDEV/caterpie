@@ -1,16 +1,18 @@
-use std::{ffi::{c_void, CStr, CString}, fs, io::Cursor, path::Path};
+use std::{
+    ffi::{c_void, CString},
+    io::Cursor,
+    path::Path,
+};
 
 use ash::{
-    util::read_spv, vk::{
-        ApplicationInfo, ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, ExtensionProperties, Extent2D, Format, Image, ImageAspectFlags, ImageSubresource, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateFlags, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, PresentModeKHR, Queue, QueueFlags, SharingMode, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME, KHR_PORTABILITY_ENUMERATION_NAME, KHR_SWAPCHAIN_NAME
-    }, Device, Entry, Instance
+    util::read_spv,
+    vk::{
+        ApplicationInfo, ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format, Image, ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateFlags, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, PipelineDynamicStateCreateFlags, PipelineShaderStageCreateInfo, PresentModeKHR, Queue, QueueFlags, ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME, KHR_PORTABILITY_ENUMERATION_NAME, KHR_SWAPCHAIN_NAME
+    },
+    Device, Entry, Instance
 };
-use log::{error, info, warn};
-use winit::{
-    raw_window_handle::{HasDisplayHandle, HasWindowHandle},
-    raw_window_handle_05::HasRawWindowHandle,
-    window::Window,
-};
+use log::*;
+use winit::{raw_window_handle::{HasDisplayHandle, HasWindowHandle}, window::Window}; 
 
 use crate::utils;
 
@@ -575,50 +577,85 @@ impl ConfigurationBuilder {
                 .get_swapchain_images(self.swapchain.unwrap())
                 .expect("Failed to retrieve swapchain images");
         }
-            info!("Swapchain images retrieved");
+        info!("Swapchain images retrieved");
         Ok(self)
     }
 
     fn create_swapchain_image_views(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
         let device = self.logical_device.as_ref().unwrap();
-                  let component_mapping = ComponentMapping::default().r(ComponentSwizzle::IDENTITY)
-                 .g(ComponentSwizzle::IDENTITY)
-                 .b(ComponentSwizzle::IDENTITY)
-                 .a(ComponentSwizzle::IDENTITY);
+        let component_mapping = ComponentMapping::default()
+            .r(ComponentSwizzle::IDENTITY)
+            .g(ComponentSwizzle::IDENTITY)
+            .b(ComponentSwizzle::IDENTITY)
+            .a(ComponentSwizzle::IDENTITY);
 
-        let subresource_range = ImageSubresourceRange::default().aspect_mask(ImageAspectFlags::COLOR)
+        let subresource_range = ImageSubresourceRange::default()
+            .aspect_mask(ImageAspectFlags::COLOR)
             .base_mip_level(0)
             .level_count(1)
             .base_array_layer(0)
             .layer_count(1);
 
-        self.image_views = self.swapchain_images.iter().map(|image| { 
-             let image_view_create_info = ImageViewCreateInfo::default()
-                .image(*image)
-                .view_type(ImageViewType::TYPE_2D)
-                .components(component_mapping)
-                .subresource_range(subresource_range);
-            unsafe { 
-            device.create_image_view(&image_view_create_info, None)
-                .expect("Failed to create image view")
-            }
-        }).collect::<Vec<ImageView>>();
+        self.image_views = self
+            .swapchain_images
+            .iter()
+            .map(|image| {
+                let image_view_create_info = ImageViewCreateInfo::default()
+                    .image(*image)
+                    .view_type(ImageViewType::TYPE_2D)
+                    .components(component_mapping)
+                    .subresource_range(subresource_range);
+                unsafe {
+                    device
+                        .create_image_view(&image_view_create_info, None)
+                        .expect("Failed to create image view")
+                }
+            })
+            .collect::<Vec<ImageView>>();
         Ok(self)
     }
 
-    fn create_shader_modules(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
-        let fragment_binding = utils::io::read_file("/assets/fragment.spv").unwrap();
-        let mut fragment_as_byte_arr = Cursor::new(&fragment_binding);
-        let mut fragment_spv: Vec<u32> = Vec::new();
+    fn create_shader_module<P: AsRef<Path> + std::fmt::Debug + ToString>(
+        &mut self,
+        path: P,
+    ) -> Result<ShaderModule, &str> {
+        let device = self.logical_device.as_ref().unwrap();
 
-        let vertex_binding = utils::io::read_file("/assets/vertex.spv").unwrap();
-        let mut vertex_as_byte_arr = Cursor::new(vertex_binding);
-        let mut vertex_spv: Vec<u32> = Vec::new();
+        let shader_binding = utils::io::read_file(&path).unwrap();
+        let mut shader_as_byte_arr = Cursor::new(&shader_binding);
+        let shader_spv: Vec<u32> = read_spv(&mut shader_as_byte_arr).expect("Failed to convert shader shader to spv");
 
-        fragment_spv = read_spv(&mut fragment_as_byte_arr).expect("Failed to convert fragment shader to spv");
-        vertex_spv = read_spv(&mut vertex_as_byte_arr).expect("Failed to convert vertex shader to spv");
-    
-        Ok(self)
+        let shader_spv_c_info = ShaderModuleCreateInfo::default().code(&shader_spv);
+
+        unsafe {
+            let shader_module = device
+                .create_shader_module(&shader_spv_c_info, None);
+
+            match shader_module { 
+                Ok(module) => Ok(module),
+                Err(_) => {
+                    error!("Failed to create shader module with path {:?}", path);
+                    Err("Failed to create shader module")
+                }
+            }
+        }
+    }
+   
+    fn create_graphics_pipeline(&mut self) {
+       let fragment_shader_module = self.create_shader_module(Path::new("/assets/fragment.spv").to_str().unwrap());
+       let vertex_shader_module = self.create_shader_module(Path::new("/assets/vertex.spv").to_str().unwrap());
+
+       let frag_shader_create_info = PipelineShaderStageCreateInfo::default().module(fragment_shader_module)
+           .stage(ShaderStageFlags::FRAGMENT).name("main");
+
+        let vert_shader_create_info = PipelineShaderStageCreateInfo::default().module(module)
+            .stage(ShaderStageFlags::VERTEX).name("main");
+
+        let pipeline_shader_create_infos = vec![vert_shader_create_info, frag_shader_create_info];
+
+        let dynamic_states = vec![DynamicState::VIEWPORT, DynamicState::SCISSOR];
+
+            
     }
 
     unsafe extern "system" fn debug_callback(

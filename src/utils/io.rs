@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use log::error;
 
-pub fn read_file<P: AsRef<Path> + std::fmt::Debug + ToString>(path: P) -> Result<Vec<u8>, &'static str>
+pub fn read_file<P: AsRef<Path> + std::fmt::Debug + ToString>(path: &P) -> Result<Vec<u8>, &'static str>
 {
     let file = fs::read(path.to_string());
     match file {
