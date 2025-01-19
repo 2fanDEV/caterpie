@@ -1,5 +1,5 @@
 use std::{
-    ffi::{c_void, CString},
+    ffi::{c_void, CStr, CString},
     io::Cursor,
     path::Path,
 };
@@ -7,7 +7,7 @@ use std::{
 use ash::{
     util::read_spv,
     vk::{
-        ApplicationInfo, ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format, Image, ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateFlags, InstanceCreateInfo, PhysicalDevice, PhysicalDeviceFeatures, PipelineDynamicStateCreateFlags, PipelineShaderStageCreateInfo, PresentModeKHR, Queue, QueueFlags, ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME, KHR_PORTABILITY_ENUMERATION_NAME, KHR_SWAPCHAIN_NAME
+        ApplicationInfo, BlendFactor, BlendOp, ColorComponentFlags, ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format, FrontFace, Image, ImageAspectFlags, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateFlags, InstanceCreateInfo, LogicOp, Offset2D, PhysicalDevice, PhysicalDeviceFeatures, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo, PipelineDynamicStateCreateFlags, PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo, PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology, Queue, QueueFlags, Rect2D, SampleCountFlags, ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport, EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME, KHR_PORTABILITY_ENUMERATION_NAME, KHR_SWAPCHAIN_NAME
     },
     Device, Entry, Instance
 };
@@ -67,6 +67,8 @@ pub struct ConfigurationBuilder {
     swapchain: Option<SwapchainKHR>,
     swapchain_images: Vec<Image>,
     image_views: Vec<ImageView>,
+    viewports: Vec<Viewport>,
+    scissors: Vec<Rect2D>,
 
     width: Option<u32>,
     height: Option<u32>,
@@ -641,21 +643,79 @@ impl ConfigurationBuilder {
         }
     }
    
-    fn create_graphics_pipeline(&mut self) {
-       let fragment_shader_module = self.create_shader_module(Path::new("/assets/fragment.spv").to_str().unwrap());
-       let vertex_shader_module = self.create_shader_module(Path::new("/assets/vertex.spv").to_str().unwrap());
+    fn create_graphics_pipeline(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+       let fragment_shader_module = self.create_shader_module(Path::new("/assets/fragment.spv").to_str().unwrap()).unwrap();
+       let vertex_shader_module = self.create_shader_module(Path::new("/assets/vertex.spv").to_str().unwrap()).unwrap();
+        
+        let bytes = "main".as_bytes();
+        let name_main = match CStr::from_bytes_with_nul(bytes) {
+            Ok(bytes) => { bytes },
+            Err(_) => {
+                error!("Failed to parse main name");
+                return Err("Failed to parse main name as bytes!");
+            }
+        };
 
        let frag_shader_create_info = PipelineShaderStageCreateInfo::default().module(fragment_shader_module)
-           .stage(ShaderStageFlags::FRAGMENT).name("main");
+           .stage(ShaderStageFlags::FRAGMENT).name(name_main);
+
 
         let vert_shader_create_info = PipelineShaderStageCreateInfo::default().module(module)
-            .stage(ShaderStageFlags::VERTEX).name("main");
+            .stage(ShaderStageFlags::VERTEX).name(name_main)
 
         let pipeline_shader_create_infos = vec![vert_shader_create_info, frag_shader_create_info];
 
         let dynamic_states = vec![DynamicState::VIEWPORT, DynamicState::SCISSOR];
+    
+        let input_assembly_create_info = PipelineInputAssemblyStateCreateInfo::default().topology(PrimitiveTopology::TRIANGLE_LIST).primitive_restart_enable(false);;
 
-            
+        self.viewports = vec![Viewport::default().x(0.0).y(0.0).width(self.extent.unwrap().height as f32).height(self.extent.unwrap().height as f32).min_depth(0.0).max_depth(1.0)];
+
+        self.scissors = vec![Rect2D::default().offset(Offset2D::default().x(0).y(0)).extent(self.extent.unwrap())];
+        
+        let pipeline_dynamic_states_create_info= PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+
+        let viewport_state = PipelineViewportStateCreateInfo::default().viewports(&self.viewports).scissors(&self.scissors);
+
+        let rasterizer_create_info = PipelineRasterizationStateCreateInfo::default().depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(CullModeFlags::BACK)
+            .front_face(FrontFace::CLOCKWISE)
+            .depth_bias_enable(false)
+            .depth_bias_constant_factor(0.0)
+            .depth_bias_clamp(0.0)
+            .depth_bias_slope_factor(0.0);
+
+        let pipeline_multisample_state_create_info = PipelineMultisampleStateCreateInfo::default().sample_shading_enable(false).rasterization_samples(SampleCountFlags::TYPE_1)
+            .min_sample_shading(1.0)
+            .alpha_to_coverage_enable(false)
+            .alpha_to_one_enable(false);
+   
+        let pipeline_color_blend_attachment_state = vec![PipelineColorBlendAttachmentState::default()
+            .color_write_mask(ColorComponentFlags::RGBA) // TODO: CHECK IF THIS WORKS
+            .blend_enable(false)
+            .src_color_blend_factor(BlendFactor::ONE)
+            .dst_color_blend_factor(BlendFactor::ZERO)
+            .color_blend_op(BlendOp::ADD)
+            .src_alpha_blend_factor(BlendFactor::ONE)
+            .dst_alpha_blend_factor(BlendFactor::ZERO)
+            .alpha_blend_op(BlendOp::ADD)];
+        
+        let color_blend_state_create_info = PipelineColorBlendStateCreateInfo::default()
+                .logic_op_enable(false)
+                .logic_op(LogicOp::COPY)
+                .attachments(&pipeline_color_blend_attachment_state)
+                .blend_constants([0.0,0.0,0.0,0.0]); // OPTIONAL
+
+        let pipeline_layout_create_info =  PipelineLayoutCreateInfo::default();
+        unsafe {
+        let pipeline_layout = self.logical_device.unwrap().create_pipeline_layout(&pipeline_layout_create_info, None).unwrap();
+        }
+
+        Ok(self)
+
     }
 
     unsafe extern "system" fn debug_callback(
