@@ -698,7 +698,6 @@ impl ConfigurationBuilder {
         unsafe {
         name_main = CStr::from_bytes_with_nul_unchecked(bytes);
         }
-
         let frag_shader_create_info = PipelineShaderStageCreateInfo::default()
             .module(fragment_shader_module)
             .stage(ShaderStageFlags::FRAGMENT)
@@ -782,7 +781,7 @@ impl ConfigurationBuilder {
                 .unwrap()
                 .create_pipeline_layout(&pipeline_layout_create_info, None)
                 .unwrap();
-        }
+        
 
         let graphics_pipeline_create_infos = vec![GraphicsPipelineCreateInfo::default()
             .stages(&pipeline_shader_create_infos)
@@ -795,8 +794,10 @@ impl ConfigurationBuilder {
             .dynamic_state(&pipeline_dynamic_states_create_info)
             .render_pass(self.render_pass.unwrap())
             .base_pipeline_index(-1)
-            .base_pipeline_handle(Pipeline::null())];
-        unsafe {
+            .layout(pipeline_layout)
+            .base_pipeline_handle(Pipeline::null())
+        .subpass(0)];
+
             self.graphics_pipelines = self
                 .logical_device
                 .as_ref()
