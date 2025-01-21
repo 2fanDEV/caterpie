@@ -7,7 +7,27 @@ use std::{
 use ash::{
     util::read_spv,
     vk::{
-        ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference, AttachmentStoreOp, BlendFactor, BlendOp, ColorComponentFlags, ColorSpaceKHR, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D, Format, FrontFace, GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateFlags, InstanceCreateInfo, LogicOp, Offset2D, PhysicalDevice, PhysicalDeviceFeatures, Pipeline, PipelineBindPoint, PipelineCache, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo, PipelineDynamicStateCreateFlags, PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology, Queue, QueueFlags, Rect2D, RenderPass, RenderPassCreateInfo, SampleCountFlags, ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassDescription, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport, EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME, KHR_PORTABILITY_ENUMERATION_NAME, KHR_SWAPCHAIN_NAME
+        ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
+        AttachmentStoreOp, BlendFactor, BlendOp, ColorComponentFlags, ColorSpaceKHR,
+        ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
+        DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
+        DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
+        DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D,
+        Format, Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image,
+        ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView,
+        ImageViewCreateInfo, ImageViewType, InstanceCreateFlags, InstanceCreateInfo, LogicOp,
+        Offset2D, PhysicalDevice, PhysicalDeviceFeatures, Pipeline, PipelineBindPoint,
+        PipelineCache, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+        PipelineDynamicStateCreateFlags, PipelineDynamicStateCreateInfo,
+        PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
+        PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
+        PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
+        PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology, Queue,
+        QueueFlags, Rect2D, RenderPass, RenderPassCreateInfo, SampleCountFlags, ShaderModule,
+        ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassDescription,
+        SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport,
+        EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME,
+        KHR_PORTABILITY_ENUMERATION_NAME, KHR_SWAPCHAIN_NAME,
     },
     Device, Entry, Instance,
 };
@@ -79,6 +99,8 @@ pub struct ConfigurationBuilder {
 
     render_pass: Option<RenderPass>,
     graphics_pipelines: Vec<Pipeline>,
+
+    framebuffers: Vec<Framebuffer>,
 
     width: Option<u32>,
     height: Option<u32>,
@@ -675,12 +697,13 @@ impl ConfigurationBuilder {
             .attachments(&attachment_description)
             .subpasses(&subpass_description);
         unsafe {
-            self.render_pass = Some(self
-                .logical_device
-                .as_ref()
-                .unwrap()
-                .create_render_pass(&render_pass_create_info, None)
-                .unwrap());
+            self.render_pass = Some(
+                self.logical_device
+                    .as_ref()
+                    .unwrap()
+                    .create_render_pass(&render_pass_create_info, None)
+                    .unwrap(),
+            );
         }
         Ok(self)
     }
@@ -694,9 +717,9 @@ impl ConfigurationBuilder {
             .unwrap();
 
         let bytes = "main".as_bytes();
-        let name_main: &CStr; 
+        let name_main: &CStr;
         unsafe {
-        name_main = CStr::from_bytes_with_nul_unchecked(bytes);
+            name_main = CStr::from_bytes_with_nul_unchecked(bytes);
         }
         let frag_shader_create_info = PipelineShaderStageCreateInfo::default()
             .module(fragment_shader_module)
@@ -781,29 +804,58 @@ impl ConfigurationBuilder {
                 .unwrap()
                 .create_pipeline_layout(&pipeline_layout_create_info, None)
                 .unwrap();
-        
 
-        let graphics_pipeline_create_infos = vec![GraphicsPipelineCreateInfo::default()
-            .stages(&pipeline_shader_create_infos)
-            .vertex_input_state(&vertex_input_state)
-            .input_assembly_state(&input_assembly_create_info)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer_create_info)
-            .multisample_state(&pipeline_multisample_state_create_info)
-            .color_blend_state(&color_blend_state_create_info)
-            .dynamic_state(&pipeline_dynamic_states_create_info)
-            .render_pass(self.render_pass.unwrap())
-            .base_pipeline_index(-1)
-            .layout(pipeline_layout)
-            .base_pipeline_handle(Pipeline::null())
-        .subpass(0)];
+            let graphics_pipeline_create_infos = vec![GraphicsPipelineCreateInfo::default()
+                .stages(&pipeline_shader_create_infos)
+                .vertex_input_state(&vertex_input_state)
+                .input_assembly_state(&input_assembly_create_info)
+                .viewport_state(&viewport_state)
+                .rasterization_state(&rasterizer_create_info)
+                .multisample_state(&pipeline_multisample_state_create_info)
+                .color_blend_state(&color_blend_state_create_info)
+                .dynamic_state(&pipeline_dynamic_states_create_info)
+                .render_pass(self.render_pass.unwrap())
+                .base_pipeline_index(-1)
+                .layout(pipeline_layout)
+                .base_pipeline_handle(Pipeline::null())
+                .subpass(0)];
 
             self.graphics_pipelines = self
                 .logical_device
                 .as_ref()
                 .unwrap()
-                .create_graphics_pipelines(PipelineCache::null(), &graphics_pipeline_create_infos, None).unwrap();
+                .create_graphics_pipelines(
+                    PipelineCache::null(),
+                    &graphics_pipeline_create_infos,
+                    None,
+                )
+                .unwrap();
         }
+        Ok(self)
+    }
+
+    fn create_framebuffers(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+        let extent = self.extent.unwrap();
+        for image_view in self.image_views.clone() {
+            let attachments = [image_view];
+
+            let framebuffer_create_info = FramebufferCreateInfo::default()
+                .attachments(&attachments)
+                .render_pass(self.render_pass.unwrap())
+                .width(extent.width)
+                .height(extent.height)
+                .layers(1);
+            unsafe {
+                self.framebuffers.push(
+                    self.logical_device
+                        .as_ref()
+                        .unwrap()
+                        .create_framebuffer(&framebuffer_create_info, None)
+                        .expect("Failed to create framebuffer"),
+                );
+            }
+        }
+        info!("Framebuffers created");
         Ok(self)
     }
 
