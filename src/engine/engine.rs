@@ -1,6 +1,7 @@
 use winit::window::Window;
 
-use super::configuration::Configuration;
+use super::Configuration;
+
 
 
 #[derive(Default)]

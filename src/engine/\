@@ -4,10 +4,7 @@ pub mod engine;
 use ash::{
     google::user_type,
     vk::{
-        CommandBuffer, CommandBufferBeginInfo, CommandPool, DebugUtilsMessengerEXT, Extent2D,
-        Framebuffer, Image, ImageView, PhysicalDevice, PhysicalDeviceFeatures, Pipeline,
-        PipelineBindPoint, PresentModeKHR, Queue, Rect2D, RenderPass, RenderPassBeginInfo,
-        SubpassContents, SurfaceFormatKHR, SurfaceKHR, SwapchainKHR, Viewport,
+        CommandBuffer, CommandBufferBeginInfo, CommandPool, DebugUtilsMessengerEXT, Extent2D, Framebuffer, Image, ImageView, PhysicalDevice, PhysicalDeviceFeatures, Pipeline, PipelineBindPoint, PresentModeKHR, Queue, Rect2D, RenderPass, RenderPassBeginInfo, SubpassContents, SurfaceFormatKHR, SurfaceKHR, SwapchainKHR, Viewport
     },
     Device, Entry, Instance,
 };
@@ -93,6 +90,8 @@ impl Configuration {
             .framebuffers
             .get(image_index as usize)
             .expect("Failed to get framebuffer at given image index");
+            
+    
 
         let render_pass_begin_info = RenderPassBeginInfo::default()
             .render_pass(self.render_pass)
@@ -103,23 +102,10 @@ impl Configuration {
                     .offset(ash::vk::Offset2D { x: 0, y: 0 }),
             );
         unsafe {
-            self.logical_device.cmd_begin_render_pass(
-                command_buffer,
-                &render_pass_begin_info,
-                SubpassContents::INLINE,
-            );
-            self.logical_device.cmd_bind_pipeline(
-                command_buffer,
-                PipelineBindPoint::GRAPHICS,
-                self.graphics_pipelines[0],
-            );
-            self.logical_device
-                .cmd_set_viewport(command_buffer, 0, &self.viewports);
-            self.logical_device
-                .cmd_set_scissor(command_buffer, 0, &self.scissors);
-            self.logical_device.cmd_draw(command_buffer, 3, 1, 0, 0);
-            self.logical_device.cmd_end_rendering(command_buffer);
-            self.logical_device.end_command_buffer(command_buffer).unwrap();
-        }
+            self.logical_device.cmd_begin_render_pass(command_buffer, &render_pass_begin_info, SubpassContents::INLINE);
+        
+
+        self.logical_device.cmd_bind_pipeline(command_buffer, PipelineBindPoint::GRAPHICS, self.graphics_pipelines[0]);\
+        ]
     }
 }

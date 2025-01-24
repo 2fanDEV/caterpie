@@ -1,6 +1,6 @@
 use app::App;
 use utils::io::*;
-use engine::{configuration::Configuration, engine::Engine};
+use engine::Configuration;
 use log::{info, LevelFilter};
 use winit::event_loop::EventLoop;
 

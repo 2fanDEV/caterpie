@@ -8,7 +8,9 @@ use ash::{
     util::read_spv,
     vk::{
         ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
-        AttachmentStoreOp, BlendFactor, BlendOp, ColorComponentFlags, ColorSpaceKHR,
+        AttachmentStoreOp, BlendFactor, BlendOp, ColorComponentFlags, ColorSpaceKHR, CommandBuffer,
+        CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
+        CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags, CommandPoolCreateInfo,
         ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
         DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
         DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
@@ -18,12 +20,13 @@ use ash::{
         ImageViewCreateInfo, ImageViewType, InstanceCreateFlags, InstanceCreateInfo, LogicOp,
         Offset2D, PhysicalDevice, PhysicalDeviceFeatures, Pipeline, PipelineBindPoint,
         PipelineCache, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
-        PipelineDynamicStateCreateFlags, PipelineDynamicStateCreateInfo,
-        PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
-        PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
-        PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
-        PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology, Queue,
-        QueueFlags, Rect2D, RenderPass, RenderPassCreateInfo, SampleCountFlags, ShaderModule,
+        PipelineDepthStencilStateCreateInfo, PipelineDynamicStateCreateFlags,
+        PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
+        PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
+        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
+        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
+        PresentModeKHR, PrimitiveTopology, Queue, QueueFlags, Rect2D, RenderPass,
+        RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags, ShaderModule,
         ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassDescription,
         SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport,
         EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME,
@@ -39,39 +42,9 @@ use winit::{
 
 use crate::utils;
 
+use super::Configuration;
+
 #[allow(clippy::pedantic)]
-
-pub struct Configuration {
-    vulkan_entry: Entry,
-    instance: Instance,
-    debug_instance: ash::ext::debug_utils::Instance,
-    debug_messenger: DebugUtilsMessengerEXT,
-}
-
-impl Configuration {
-    pub fn default(window: &Window) -> Configuration {
-        ConfigurationBuilder::default()
-            .create_instance(window)
-            .expect("Failed to create instance")
-            .create_surface(window)
-            .expect("Failed to create surface")
-            .pick_physical_device()
-            .expect("Failed to pick physical device")
-            .create_logical_device()
-            .expect("Failed to create logical device")
-            .create_swap_chain()
-            .expect("Failed to create swapchain")
-            .create_swapchain_image_views()
-            .expect("Failed to create swapchain image views")
-            .create_render_pass()
-            .expect("Failed to create render pass")
-            .create_graphics_pipeline()
-            .unwrap()
-            .build()
-            .unwrap()
-    }
-}
-
 #[derive(Default)]
 pub struct ConfigurationBuilder {
     vulkan_entry: Option<Entry>,
@@ -101,6 +74,8 @@ pub struct ConfigurationBuilder {
     graphics_pipelines: Vec<Pipeline>,
 
     framebuffers: Vec<Framebuffer>,
+    command_pool: Option<CommandPool>,
+    command_buffer: Vec<CommandBuffer>,
 
     width: Option<u32>,
     height: Option<u32>,
@@ -110,7 +85,7 @@ pub struct ConfigurationBuilder {
 }
 
 #[derive(Default, Debug, Clone, Copy)]
-struct QueueFamilyIndices {
+pub struct QueueFamilyIndices {
     graphics_queue: Option<u32>,
     presentation_queue: Option<u32>,
 }
@@ -164,7 +139,7 @@ impl QueueFamilyIndices {
 }
 
 #[derive(Clone)]
-struct SwapchainSupportDetails {
+pub struct SwapchainSupportDetails {
     capabilities: ash::vk::SurfaceCapabilitiesKHR,
     formats: Vec<ash::vk::SurfaceFormatKHR>,
     present_modes: Vec<ash::vk::PresentModeKHR>,
@@ -323,7 +298,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    fn create_surface(&mut self, window: &Window) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_surface(&mut self, window: &Window) -> Result<&mut ConfigurationBuilder, &str> {
         self.surface_instance = Some(ash::khr::surface::Instance::new(
             self.vulkan_entry.as_ref().unwrap(),
             self.instance.as_ref().unwrap(),
@@ -344,7 +319,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    fn pick_physical_device(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn pick_physical_device(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
         unsafe {
             let instance = self.instance.as_ref().unwrap();
             let physical_devices = instance
@@ -390,7 +365,7 @@ impl ConfigurationBuilder {
         queue_family_indices.is_complete() && extensions_enabled && adequate_swapchain
     }
 
-    fn check_device_extension_support(&mut self, physical_device: &PhysicalDevice) -> bool {
+    pub fn check_device_extension_support(&mut self, physical_device: &PhysicalDevice) -> bool {
         let device_extensions = vec![ash::khr::swapchain::NAME.to_str().unwrap()];
         let mut flag = true;
         unsafe {
@@ -425,7 +400,7 @@ impl ConfigurationBuilder {
         flag
     }
 
-    fn check_validation_layer_support(&self) -> Result<bool, &str> {
+    pub fn check_validation_layer_support(&self) -> Result<bool, &str> {
         let validation_layers = vec!["VK_LAYER_KHRONOS_validation"];
         unsafe {
             let available_layers = self
@@ -450,7 +425,7 @@ impl ConfigurationBuilder {
         Err("Validation Layers are not present on this machine")
     }
 
-    fn create_logical_device(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_logical_device(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
         let instance = self.instance.as_ref().unwrap();
         self.queue_family_indices = QueueFamilyIndices::find_queue_family_indices(
             instance.clone(),
@@ -497,7 +472,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    fn find_device_queue(&mut self, queue_family_index: u32) -> Option<Queue> {
+    pub fn find_device_queue(&mut self, queue_family_index: u32) -> Option<Queue> {
         unsafe {
             Some(
                 self.logical_device
@@ -508,7 +483,7 @@ impl ConfigurationBuilder {
         }
     }
 
-    fn create_swap_chain(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_swap_chain(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
         self.swapchain_support_details = Some(SwapchainSupportDetails::query_swapchain_support(
             self.instance.as_ref().unwrap(),
             self.surface_instance.as_ref().unwrap(),
@@ -615,7 +590,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    fn create_swapchain_image_views(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_swapchain_image_views(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
         let device = self.logical_device.as_ref().unwrap();
         let component_mapping = ComponentMapping::default()
             .r(ComponentSwizzle::IDENTITY)
@@ -649,7 +624,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    fn create_shader_module<P: AsRef<Path> + std::fmt::Debug + ToString>(
+    pub fn create_shader_module<P: AsRef<Path> + std::fmt::Debug + ToString>(
         &mut self,
         path: P,
     ) -> Result<ShaderModule, &str> {
@@ -675,7 +650,7 @@ impl ConfigurationBuilder {
         }
     }
 
-    fn create_render_pass(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_render_pass(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
         let attachment_description = vec![AttachmentDescription::default()
             .format(self.surface_format.as_ref().unwrap().format)
             .samples(SampleCountFlags::TYPE_1)
@@ -705,22 +680,19 @@ impl ConfigurationBuilder {
                     .unwrap(),
             );
         }
+        info!("Renderpass has been initialized!");
         Ok(self)
     }
 
-    fn create_graphics_pipeline(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_graphics_pipeline(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
         let fragment_shader_module = self
-            .create_shader_module(Path::new("assets/fragment.spv").to_str().unwrap())
+            .create_shader_module(Path::new("src/assets/fragment.spv").to_str().unwrap())
             .unwrap();
         let vertex_shader_module = self
-            .create_shader_module(Path::new("assets/vertices.spv").to_str().unwrap())
+            .create_shader_module(Path::new("src/assets/vertices.spv").to_str().unwrap())
             .unwrap();
 
-        let bytes = "main".as_bytes();
-        let name_main: &CStr;
-        unsafe {
-            name_main = CStr::from_bytes_with_nul_unchecked(bytes);
-        }
+        let name_main: &CStr = c"main";
         let frag_shader_create_info = PipelineShaderStageCreateInfo::default()
             .module(fragment_shader_module)
             .stage(ShaderStageFlags::FRAGMENT)
@@ -753,8 +725,9 @@ impl ConfigurationBuilder {
             .offset(Offset2D::default().x(0).y(0))
             .extent(self.extent.unwrap())];
 
-        let pipeline_dynamic_states_create_info =
-            PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let pipeline_dynamic_states_create_info = PipelineDynamicStateCreateInfo::default()
+            .dynamic_states(&dynamic_states)
+            .flags(PipelineDynamicStateCreateFlags::empty());
 
         let viewport_state = PipelineViewportStateCreateInfo::default()
             .viewports(&self.viewports)
@@ -805,8 +778,9 @@ impl ConfigurationBuilder {
                 .create_pipeline_layout(&pipeline_layout_create_info, None)
                 .unwrap();
 
+            let depth_stencil_state = PipelineDepthStencilStateCreateInfo::default();
+
             let graphics_pipeline_create_infos = vec![GraphicsPipelineCreateInfo::default()
-                .stages(&pipeline_shader_create_infos)
                 .vertex_input_state(&vertex_input_state)
                 .input_assembly_state(&input_assembly_create_info)
                 .viewport_state(&viewport_state)
@@ -818,8 +792,12 @@ impl ConfigurationBuilder {
                 .base_pipeline_index(-1)
                 .layout(pipeline_layout)
                 .base_pipeline_handle(Pipeline::null())
-                .subpass(0)];
+                .stages(&pipeline_shader_create_infos)
+                .subpass(0)
+                .depth_stencil_state(&depth_stencil_state)];
 
+            info!("Graphics Pipeline Create Info created!");
+            println!("{:?}", graphics_pipeline_create_infos);
             self.graphics_pipelines = self
                 .logical_device
                 .as_ref()
@@ -834,7 +812,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    fn create_framebuffers(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_framebuffers(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
         let extent = self.extent.unwrap();
         for image_view in self.image_views.clone() {
             let attachments = [image_view];
@@ -856,6 +834,33 @@ impl ConfigurationBuilder {
             }
         }
         info!("Framebuffers created");
+        Ok(self)
+    }
+
+    pub fn create_command_pool(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+        let queue_family_indices = self.queue_family_indices.unwrap();
+
+        let command_pool_create_info = CommandPoolCreateInfo::default()
+            .queue_family_index(queue_family_indices.graphics_queue.unwrap())
+            .flags(CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        unsafe {
+            self.command_pool = Some(
+                self.logical_device
+                    .as_ref()
+                    .unwrap()
+                    .create_command_pool(&command_pool_create_info, None)
+                    .unwrap(),
+            );
+        }
+        Ok(self)
+    }
+
+    pub fn create_command_buffer(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+        let command_buffer_allocate_info = CommandBufferAllocateInfo::default()
+            .command_pool(self.command_pool.unwrap())
+            .level(CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+
         Ok(self)
     }
 
@@ -904,6 +909,37 @@ impl ConfigurationBuilder {
             instance: self.instance.clone().unwrap(),
             debug_instance: self.debug_instance.clone().unwrap(),
             debug_messenger: self.debug_messenger.unwrap(),
+            command_buffer: self.command_buffer.clone(),
+            command_pool: self.command_pool.clone().unwrap(),
+            device_extensions: self.device_extensions.clone(),
+            extent: self.extent.clone().unwrap(),
+            framebuffers: self.framebuffers.clone(),
+            graphics_pipelines: self.graphics_pipelines.clone(),
+            graphics_queue: self.graphics_queue.clone().unwrap(),
+
+            height: self.height.clone().unwrap(),
+            width: self.width.clone().unwrap(),
+
+            image_count: self.image_count,
+            image_views: self.image_views.clone(),
+            logical_device: self.logical_device.clone().unwrap(),
+            physical_device: self.physical_device.unwrap(),
+
+            present_mode: self.present_mode.clone().unwrap(),
+
+            render_pass: self.render_pass.clone().unwrap(),
+            physical_device_features: self.physical_device_features.clone().unwrap(),
+            presentation_queue: self.presentation_queue.clone().unwrap(),
+            queue_family_indices: self.queue_family_indices.clone().unwrap(),
+            scissors: self.scissors.clone(),
+            surface: self.surface.clone().unwrap(),
+            surface_format: self.surface_format.clone().unwrap(),
+            surface_instance: self.surface_instance.clone().unwrap(),
+            swapchain: self.swapchain.clone().unwrap(),
+            swapchain_device: self.swapchain_device.clone().unwrap(),
+            swapchain_images: self.swapchain_images.clone(),
+            swapchain_support_details: self.swapchain_support_details.clone().unwrap(),
+            viewports: self.viewports.clone(),
         })
     }
 }
