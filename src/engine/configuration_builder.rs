@@ -4,15 +4,19 @@ use std::{
     path::Path,
 };
 
+use ash::vk::{
+    AccessFlags, Fence, FenceCreateFlags, FenceCreateInfo, PipelineInputAssemblyStateCreateInfo,
+    PipelineStageFlags, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubpassDependency,
+    SUBPASS_EXTERNAL,
+};
 use ash::{
     util::read_spv,
     vk::{
         ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
         AttachmentStoreOp, BlendFactor, BlendOp, ColorComponentFlags, ColorSpaceKHR, CommandBuffer,
-        CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
-        CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags, CommandPoolCreateInfo,
-        ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
-        DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
+        CommandBufferAllocateInfo, CommandBufferLevel, CommandPool, CommandPoolCreateFlags,
+        CommandPoolCreateInfo, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
+        CullModeFlags, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
         DebugUtilsMessengerCallbackDataEXT, DebugUtilsMessengerCreateInfoEXT,
         DebugUtilsMessengerEXT, DeviceCreateInfo, DeviceQueueCreateInfo, DynamicState, Extent2D,
         Format, Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image,
@@ -21,12 +25,11 @@ use ash::{
         Offset2D, PhysicalDevice, PhysicalDeviceFeatures, Pipeline, PipelineBindPoint,
         PipelineCache, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
         PipelineDepthStencilStateCreateInfo, PipelineDynamicStateCreateFlags,
-        PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
-        PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
-        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
-        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
-        PresentModeKHR, PrimitiveTopology, Queue, QueueFlags, Rect2D, RenderPass,
-        RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags, ShaderModule,
+        PipelineDynamicStateCreateInfo, PipelineLayoutCreateInfo,
+        PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
+        PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
+        PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology, Queue,
+        QueueFlags, Rect2D, RenderPass, RenderPassCreateInfo, SampleCountFlags, ShaderModule,
         ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassDescription,
         SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport,
         EXT_DEBUG_UTILS_NAME, KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME,
@@ -43,6 +46,8 @@ use winit::{
 use crate::utils;
 
 use super::Configuration;
+
+pub const MAX_FLIGHT_FENCES: u32 =  2;
 
 #[allow(clippy::pedantic)]
 #[derive(Default)]
@@ -77,6 +82,10 @@ pub struct ConfigurationBuilder {
     command_pool: Option<CommandPool>,
     command_buffer: Vec<CommandBuffer>,
 
+    image_available_semaphores: Vec<Semaphore>,
+    render_finished_semaphores: Vec<Semaphore>,
+    in_flight_fences: Vec<Fence>,
+
     width: Option<u32>,
     height: Option<u32>,
 
@@ -86,8 +95,8 @@ pub struct ConfigurationBuilder {
 
 #[derive(Default, Debug, Clone, Copy)]
 pub struct QueueFamilyIndices {
-    graphics_queue: Option<u32>,
-    presentation_queue: Option<u32>,
+    pub graphics_queue: Option<u32>,
+    pub presentation_queue: Option<u32>,
 }
 
 impl QueueFamilyIndices {
@@ -140,9 +149,9 @@ impl QueueFamilyIndices {
 
 #[derive(Clone)]
 pub struct SwapchainSupportDetails {
-    capabilities: ash::vk::SurfaceCapabilitiesKHR,
-    formats: Vec<ash::vk::SurfaceFormatKHR>,
-    present_modes: Vec<ash::vk::PresentModeKHR>,
+    pub capabilities: ash::vk::SurfaceCapabilitiesKHR,
+    pub formats: Vec<ash::vk::SurfaceFormatKHR>,
+    pub present_modes: Vec<ash::vk::PresentModeKHR>,
 }
 
 impl SwapchainSupportDetails {
@@ -210,6 +219,7 @@ impl SwapchainSupportDetails {
                 self.capabilities.min_image_extent.height,
                 self.capabilities.max_image_extent.height,
             );
+
             return extent_2d;
         }
     }
@@ -222,7 +232,7 @@ impl ConfigurationBuilder {
             self.height = Some(1080); //TODO!
 
             self.vulkan_entry =
-                Some(Entry::load().expect("Failed to find vulkan library on this machine"));
+                Some(Entry::load_from("/Users/tufan/VulkanSDK/1.3.296.0/macOS/lib/libvulkan.dylib").expect("Failed to find vulkan library on this machine"));
             let application_version = 1;
             let application_name = CString::new("Caterpie").unwrap();
             let engine_name = CString::new("Caterpie Engine").unwrap();
@@ -361,7 +371,6 @@ impl ConfigurationBuilder {
                 && !swapchain_support_details.present_modes.is_empty();
         }
 
-        println!("{:?}", queue_family_indices);
         queue_family_indices.is_complete() && extensions_enabled && adequate_swapchain
     }
 
@@ -389,7 +398,6 @@ impl ConfigurationBuilder {
             for extension in device_extensions {
                 if !device_extension_properties.contains(&extension) {
                     flag = false;
-                    println!("{:?}, {:?}", extension, device_extension_properties);
                 }
             }
         }
@@ -568,7 +576,6 @@ impl ConfigurationBuilder {
             swapchain_create_info =
                 swapchain_create_info.image_sharing_mode(SharingMode::EXCLUSIVE);
         }
-
         unsafe {
             self.swapchain = Some(
                 self.swapchain_device
@@ -591,6 +598,7 @@ impl ConfigurationBuilder {
     }
 
     pub fn create_swapchain_image_views(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+
         let device = self.logical_device.as_ref().unwrap();
         let component_mapping = ComponentMapping::default()
             .r(ComponentSwizzle::IDENTITY)
@@ -611,6 +619,7 @@ impl ConfigurationBuilder {
             .map(|image| {
                 let image_view_create_info = ImageViewCreateInfo::default()
                     .image(*image)
+                    .format(self.surface_format.unwrap().format)
                     .view_type(ImageViewType::TYPE_2D)
                     .components(component_mapping)
                     .subresource_range(subresource_range);
@@ -662,15 +671,26 @@ impl ConfigurationBuilder {
             .final_layout(ImageLayout::PRESENT_SRC_KHR)];
 
         let attachment_reference =
-            vec![AttachmentReference::default().layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+            vec![AttachmentReference::default().attachment(0).layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
 
         let subpass_description = vec![SubpassDescription::default()
             .pipeline_bind_point(PipelineBindPoint::GRAPHICS)
             .color_attachments(&attachment_reference)];
 
+        let subpass_dependency = vec![SubpassDependency::default()
+            .src_subpass(SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .src_access_mask(AccessFlags::empty())
+            .dst_access_mask(AccessFlags::COLOR_ATTACHMENT_WRITE)
+            ];
+
         let render_pass_create_info = RenderPassCreateInfo::default()
             .attachments(&attachment_description)
-            .subpasses(&subpass_description);
+            .subpasses(&subpass_description)
+            .dependencies(&subpass_dependency);
+
         unsafe {
             self.render_pass = Some(
                 self.logical_device
@@ -686,11 +706,9 @@ impl ConfigurationBuilder {
 
     pub fn create_graphics_pipeline(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
         let fragment_shader_module = self
-            .create_shader_module(Path::new("src/assets/fragment.spv").to_str().unwrap())
-            .unwrap();
+            .create_shader_module(Path::new("src/assets/fragment.spv").to_str().unwrap()).unwrap();
         let vertex_shader_module = self
-            .create_shader_module(Path::new("src/assets/vertices.spv").to_str().unwrap())
-            .unwrap();
+            .create_shader_module(Path::new("src/assets/vertices.spv").to_str().unwrap()).unwrap();
 
         let name_main: &CStr = c"main";
         let frag_shader_create_info = PipelineShaderStageCreateInfo::default()
@@ -712,11 +730,11 @@ impl ConfigurationBuilder {
         let input_assembly_create_info = PipelineInputAssemblyStateCreateInfo::default()
             .topology(PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
-
+        
         self.viewports = vec![Viewport::default()
             .x(0.0)
             .y(0.0)
-            .width(self.extent.unwrap().height as f32)
+            .width(self.extent.unwrap().width as f32)
             .height(self.extent.unwrap().height as f32)
             .min_depth(0.0)
             .max_depth(1.0)];
@@ -797,7 +815,6 @@ impl ConfigurationBuilder {
                 .depth_stencil_state(&depth_stencil_state)];
 
             info!("Graphics Pipeline Create Info created!");
-            println!("{:?}", graphics_pipeline_create_infos);
             self.graphics_pipelines = self
                 .logical_device
                 .as_ref()
@@ -852,6 +869,7 @@ impl ConfigurationBuilder {
                     .unwrap(),
             );
         }
+        info!("Command pool has been created");
         Ok(self)
     }
 
@@ -859,9 +877,35 @@ impl ConfigurationBuilder {
         let command_buffer_allocate_info = CommandBufferAllocateInfo::default()
             .command_pool(self.command_pool.unwrap())
             .level(CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-
+            .command_buffer_count(MAX_FLIGHT_FENCES);
+         
+        self.command_buffer = unsafe { self.logical_device.as_ref().unwrap().allocate_command_buffers(&command_buffer_allocate_info).unwrap() };
+        info!("Command Buffers have been allocated");
         Ok(self)
+    }
+
+    pub fn create_sync_objects(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+
+        for i in 0..MAX_FLIGHT_FENCES { 
+            self.image_available_semaphores.push(self.create_semaphore().unwrap()); 
+            self.render_finished_semaphores.push(self.create_semaphore().unwrap());
+            self.in_flight_fences.push(self.create_fence().unwrap());
+        }
+
+        info!("Sync Object (Semaphores, Fences) have been created");
+        Ok(self)
+    }
+
+    fn create_semaphore(&self) -> Option<Semaphore> {
+        let device = self.logical_device.as_ref().unwrap();
+        let sci = SemaphoreCreateInfo::default().flags(SemaphoreCreateFlags::default());
+        unsafe { Some(device.create_semaphore(&sci, None).unwrap()) }
+    }
+
+    fn create_fence(&self) -> Option<Fence> {
+        let device = self.logical_device.as_ref().unwrap();
+        let fci = FenceCreateInfo::default().flags(FenceCreateFlags::SIGNALED);
+        unsafe { Some(device.create_fence(&fci, None).unwrap()) }
     }
 
     unsafe extern "system" fn debug_callback(
@@ -910,14 +954,14 @@ impl ConfigurationBuilder {
             debug_instance: self.debug_instance.clone().unwrap(),
             debug_messenger: self.debug_messenger.unwrap(),
             command_buffer: self.command_buffer.clone(),
-            command_pool: self.command_pool.clone().unwrap(),
+            command_pool: self.command_pool.unwrap(),
             device_extensions: self.device_extensions.clone(),
-            extent: self.extent.clone().unwrap(),
+            extent: self.extent.unwrap(),
             framebuffers: self.framebuffers.clone(),
             graphics_pipelines: self.graphics_pipelines.clone(),
-            graphics_queue: self.graphics_queue.clone().unwrap(),
+            graphics_queue: self.graphics_queue.unwrap(),
 
-            height: self.height.clone().unwrap(),
+            height: self.height.unwrap(),
             width: self.width.clone().unwrap(),
 
             image_count: self.image_count,
@@ -925,21 +969,26 @@ impl ConfigurationBuilder {
             logical_device: self.logical_device.clone().unwrap(),
             physical_device: self.physical_device.unwrap(),
 
-            present_mode: self.present_mode.clone().unwrap(),
+            present_mode: self.present_mode.unwrap(),
 
-            render_pass: self.render_pass.clone().unwrap(),
-            physical_device_features: self.physical_device_features.clone().unwrap(),
-            presentation_queue: self.presentation_queue.clone().unwrap(),
-            queue_family_indices: self.queue_family_indices.clone().unwrap(),
+            render_pass: self.render_pass.unwrap(),
+            physical_device_features: self.physical_device_features.unwrap(),
+            presentation_queue: self.presentation_queue.unwrap(),
+            queue_family_indices: self.queue_family_indices.unwrap(),
             scissors: self.scissors.clone(),
-            surface: self.surface.clone().unwrap(),
-            surface_format: self.surface_format.clone().unwrap(),
+            surface: self.surface.unwrap(),
+            surface_format: self.surface_format.unwrap(),
             surface_instance: self.surface_instance.clone().unwrap(),
-            swapchain: self.swapchain.clone().unwrap(),
+            swapchain: self.swapchain.unwrap(),
             swapchain_device: self.swapchain_device.clone().unwrap(),
             swapchain_images: self.swapchain_images.clone(),
             swapchain_support_details: self.swapchain_support_details.clone().unwrap(),
             viewports: self.viewports.clone(),
+            image_available_semaphores: self.image_available_semaphores.clone(),
+            render_finished_semaphores: self.render_finished_semaphores.clone(),
+            in_flight_fences: self.in_flight_fences.clone(),
+            frame: 0,
+            resized_flag: false
         })
     }
 }

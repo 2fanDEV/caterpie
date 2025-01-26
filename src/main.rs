@@ -12,7 +12,6 @@ fn main() {
     let mut app = App::default();
     let event_loop = EventLoop::new().unwrap();
     env_logger::builder().filter_level(LevelFilter::Debug).try_init();
-    println!("TEST");
     info!("test");
     event_loop.run_app(&mut app).unwrap();
     println!("Hello, world!");
