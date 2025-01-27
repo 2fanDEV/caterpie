@@ -47,7 +47,7 @@ use crate::utils;
 
 use super::Configuration;
 
-pub const MAX_FLIGHT_FENCES: u32 =  2;
+pub const MAX_FLIGHT_FENCES: u32 = 2;
 
 #[allow(clippy::pedantic)]
 #[derive(Default)]
@@ -181,15 +181,17 @@ impl SwapchainSupportDetails {
 
     pub fn choose_swap_chain_format(&self) -> SurfaceFormatKHR {
         let surface_format_khr = self.formats.iter().find(|format| {
-            format.format == Format::B8G8R8_SRGB
+            format.format == Format::R8G8B8A8_UNORM
                 && format.color_space.eq(&ColorSpaceKHR::SRGB_NONLINEAR)
         });
 
         if surface_format_khr.is_some() {
             return *surface_format_khr.unwrap();
+        } else {
+            SurfaceFormatKHR::default()
+                .format(Format::R8G8B8A8_UNORM)
+                .color_space(ColorSpaceKHR::SRGB_NONLINEAR)
         }
-
-        self.formats[0]
     }
 
     pub fn choose_present_mode(&self) -> PresentModeKHR {
@@ -231,8 +233,10 @@ impl ConfigurationBuilder {
             self.width = Some(1080); //TODO!
             self.height = Some(1080); //TODO!
 
-            self.vulkan_entry =
-                Some(Entry::load_from("/Users/tufan/VulkanSDK/1.3.296.0/macOS/lib/libvulkan.dylib").expect("Failed to find vulkan library on this machine"));
+            self.vulkan_entry = Some(
+                Entry::load_from("/Users/tufan/VulkanSDK/1.3.296.0/macOS/lib/libvulkan.dylib")
+                    .expect("Failed to find vulkan library on this machine"),
+            );
             let application_version = 1;
             let application_name = CString::new("Caterpie").unwrap();
             let engine_name = CString::new("Caterpie Engine").unwrap();
@@ -598,7 +602,6 @@ impl ConfigurationBuilder {
     }
 
     pub fn create_swapchain_image_views(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
-
         let device = self.logical_device.as_ref().unwrap();
         let component_mapping = ComponentMapping::default()
             .r(ComponentSwizzle::IDENTITY)
@@ -670,8 +673,9 @@ impl ConfigurationBuilder {
             .initial_layout(ImageLayout::UNDEFINED)
             .final_layout(ImageLayout::PRESENT_SRC_KHR)];
 
-        let attachment_reference =
-            vec![AttachmentReference::default().attachment(0).layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+        let attachment_reference = vec![AttachmentReference::default()
+            .attachment(0)
+            .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
 
         let subpass_description = vec![SubpassDescription::default()
             .pipeline_bind_point(PipelineBindPoint::GRAPHICS)
@@ -683,8 +687,7 @@ impl ConfigurationBuilder {
             .src_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
             .dst_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
             .src_access_mask(AccessFlags::empty())
-            .dst_access_mask(AccessFlags::COLOR_ATTACHMENT_WRITE)
-            ];
+            .dst_access_mask(AccessFlags::COLOR_ATTACHMENT_WRITE)];
 
         let render_pass_create_info = RenderPassCreateInfo::default()
             .attachments(&attachment_description)
@@ -706,9 +709,11 @@ impl ConfigurationBuilder {
 
     pub fn create_graphics_pipeline(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
         let fragment_shader_module = self
-            .create_shader_module(Path::new("src/assets/fragment.spv").to_str().unwrap()).unwrap();
+            .create_shader_module(Path::new("src/assets/fragment.spv").to_str().unwrap())
+            .unwrap();
         let vertex_shader_module = self
-            .create_shader_module(Path::new("src/assets/vertices.spv").to_str().unwrap()).unwrap();
+            .create_shader_module(Path::new("src/assets/vertices.spv").to_str().unwrap())
+            .unwrap();
 
         let name_main: &CStr = c"main";
         let frag_shader_create_info = PipelineShaderStageCreateInfo::default()
@@ -730,7 +735,7 @@ impl ConfigurationBuilder {
         let input_assembly_create_info = PipelineInputAssemblyStateCreateInfo::default()
             .topology(PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
-        
+
         self.viewports = vec![Viewport::default()
             .x(0.0)
             .y(0.0)
@@ -878,17 +883,24 @@ impl ConfigurationBuilder {
             .command_pool(self.command_pool.unwrap())
             .level(CommandBufferLevel::PRIMARY)
             .command_buffer_count(MAX_FLIGHT_FENCES);
-         
-        self.command_buffer = unsafe { self.logical_device.as_ref().unwrap().allocate_command_buffers(&command_buffer_allocate_info).unwrap() };
+
+        self.command_buffer = unsafe {
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .allocate_command_buffers(&command_buffer_allocate_info)
+                .unwrap()
+        };
         info!("Command Buffers have been allocated");
         Ok(self)
     }
 
     pub fn create_sync_objects(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
-
-        for i in 0..MAX_FLIGHT_FENCES { 
-            self.image_available_semaphores.push(self.create_semaphore().unwrap()); 
-            self.render_finished_semaphores.push(self.create_semaphore().unwrap());
+        for i in 0..MAX_FLIGHT_FENCES {
+            self.image_available_semaphores
+                .push(self.create_semaphore().unwrap());
+            self.render_finished_semaphores
+                .push(self.create_semaphore().unwrap());
             self.in_flight_fences.push(self.create_fence().unwrap());
         }
 
@@ -988,7 +1000,7 @@ impl ConfigurationBuilder {
             render_finished_semaphores: self.render_finished_semaphores.clone(),
             in_flight_fences: self.in_flight_fences.clone(),
             frame: 0,
-            resized_flag: false
+            resized_flag: false,
         })
     }
 }

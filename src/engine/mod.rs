@@ -4,13 +4,40 @@ pub mod engine;
 use std::{ffi::CStr, io::Cursor, path::Path};
 
 use ash::{
-    util::read_spv, vk::{
-        AccessFlags, AttachmentDescription, AttachmentLoadOp, AttachmentReference, AttachmentStoreOp, BlendFactor, BlendOp, ClearColorValue, ClearValue, ColorComponentFlags, CommandBuffer, CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsageFlags, CommandPool, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags, DebugUtilsMessengerEXT, DynamicState, Extent2D, Fence, Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, LogicOp, Offset2D, PhysicalDevice, PhysicalDeviceFeatures, Pipeline, PipelineBindPoint, PipelineCache, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo, PipelineDepthStencilStateCreateInfo, PipelineDynamicStateCreateFlags, PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode, PresentModeKHR, PrimitiveTopology, Queue, Rect2D, RenderPass, RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags, Semaphore, ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubpassContents, SubpassDependency, SubpassDescription, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport, SUBPASS_EXTERNAL
-    }, Device, Entry, Instance
+    util::read_spv,
+    vk::{
+        AccessFlags, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
+        AttachmentStoreOp, BlendFactor, BlendOp, ClearColorValue, ClearValue, ColorComponentFlags,
+        CommandBuffer, CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
+        CommandBufferUsageFlags, CommandPool, ComponentMapping, ComponentSwizzle,
+        CompositeAlphaFlagsKHR, CullModeFlags, DebugUtilsMessengerEXT, DynamicState, Extent2D,
+        Fence, Framebuffer, FramebufferCreateInfo, FrontFace, GraphicsPipelineCreateInfo, Image,
+        ImageAspectFlags, ImageLayout, ImageSubresourceRange, ImageUsageFlags, ImageView,
+        ImageViewCreateInfo, ImageViewType, LogicOp, Offset2D, PhysicalDevice,
+        PhysicalDeviceFeatures, Pipeline, PipelineBindPoint, PipelineCache,
+        PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
+        PipelineDepthStencilStateCreateInfo, PipelineDynamicStateCreateFlags,
+        PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo,
+        PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
+        PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo, PipelineStageFlags,
+        PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
+        PresentModeKHR, PrimitiveTopology, Queue, Rect2D, RenderPass, RenderPassBeginInfo,
+        RenderPassCreateInfo, SampleCountFlags, Semaphore, ShaderModule, ShaderModuleCreateInfo,
+        ShaderStageFlags, SharingMode, SubpassContents, SubpassDependency, SubpassDescription,
+        SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR, Viewport,
+        SUBPASS_EXTERNAL,
+    },
+    Device, Entry, Instance,
 };
-use configuration_builder::{ConfigurationBuilder, QueueFamilyIndices, SwapchainSupportDetails, MAX_FLIGHT_FENCES};
+use configuration_builder::{
+    ConfigurationBuilder, QueueFamilyIndices, SwapchainSupportDetails, MAX_FLIGHT_FENCES,
+};
 use log::{error, info};
-use winit::{dpi::{PhysicalSize, Size}, keyboard::Key, window::Window};
+use winit::{
+    dpi::{PhysicalSize, Size},
+    keyboard::Key,
+    window::Window,
+};
 
 use crate::utils;
 
@@ -96,7 +123,6 @@ impl Configuration {
         self.height = size.width;
     }
 
-
     pub fn record_command_buffer(&self, command_buffer: &CommandBuffer, image_index: u32) {
         let command_buffer_begin_info =
             CommandBufferBeginInfo::default().flags(CommandBufferUsageFlags::empty());
@@ -110,11 +136,11 @@ impl Configuration {
             .get(image_index as usize)
             .expect("Failed to get framebuffer at given image index");
 
-        let mut clear_color_value = ClearColorValue::default();
-        clear_color_value.float32 = [0.0, 0.0, 0.0, 0.0];
-
-        let mut clear_color = vec![ClearValue::default()];
-        clear_color[0].color = clear_color_value;
+        let clear_color = vec![ClearValue {
+            color: ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 0.0],
+            },
+        }];
 
         let render_pass_begin_info = RenderPassBeginInfo::default()
             .render_pass(self.render_pass)
@@ -150,8 +176,6 @@ impl Configuration {
 
     pub fn recreate_swapchain(&mut self) {
         unsafe {
-
-
             self.logical_device.device_wait_idle().unwrap();
             self.destroy_swapchain();
             self.recreate_swap_chain();
@@ -163,53 +187,49 @@ impl Configuration {
             self.recreate_framebuffers();
 
             self.recreate_command_buffer();
-
         }
     }
 
     fn destroy_swapchain(&mut self) {
-        unsafe { 
-            self.framebuffers.iter().for_each(|f| self.logical_device.destroy_framebuffer(*f, None));
+        unsafe {
+            self.framebuffers
+                .iter()
+                .for_each(|f| self.logical_device.destroy_framebuffer(*f, None));
             self.framebuffers.clear();
-            self.logical_device.free_command_buffers(self.command_pool, &self.command_buffer);
-            self.logical_device.destroy_pipeline(self.graphics_pipelines[0], None);
-            self.logical_device.destroy_render_pass(self.render_pass, None);
-            self.image_views.iter().for_each(|v| self.logical_device.destroy_image_view(*v,None));
+            self.logical_device
+                .free_command_buffers(self.command_pool, &self.command_buffer);
+            self.logical_device
+                .destroy_pipeline(self.graphics_pipelines[0], None);
+            self.logical_device
+                .destroy_render_pass(self.render_pass, None);
+            self.image_views
+                .iter()
+                .for_each(|v| self.logical_device.destroy_image_view(*v, None));
             self.image_views.clear();
-            self.swapchain_device.destroy_swapchain(self.swapchain, None);
-            self.in_flight_fences.resize(self.swapchain_images.len(), Fence::null());
-            }
+            self.swapchain_device
+                .destroy_swapchain(self.swapchain, None);
+            self.in_flight_fences
+                .resize(self.swapchain_images.len(), Fence::null());
+        }
     }
 
-
     fn recreate_swap_chain(&mut self) {
-
-    self.swapchain_support_details = SwapchainSupportDetails::query_swapchain_support(
+        self.swapchain_support_details = SwapchainSupportDetails::query_swapchain_support(
             &self.instance,
             &self.surface_instance,
             &self.surface,
             &self.physical_device,
         );
 
-        
-        self.surface_format = 
-            self.swapchain_support_details
-                .choose_swap_chain_format();
-        self.present_mode = 
-            self.swapchain_support_details.choose_present_mode();
- 
-        self.extent = 
-            self.swapchain_support_details.choose_swap_extent(self.width, self.height);
+        self.surface_format = self.swapchain_support_details.choose_swap_chain_format();
+        self.present_mode = self.swapchain_support_details.choose_present_mode();
 
-        self.image_count = self
+        self.extent = self
             .swapchain_support_details
-            .capabilities
-            .min_image_count
-            + 1;
-        let max_image_count = self
-            .swapchain_support_details
-            .capabilities
-            .max_image_count;
+            .choose_swap_extent(self.width, self.height);
+
+        self.image_count = self.swapchain_support_details.capabilities.min_image_count + 1;
+        let max_image_count = self.swapchain_support_details.capabilities.max_image_count;
         if max_image_count > 0 && self.image_count > max_image_count {
             self.image_count = max_image_count;
         }
@@ -252,9 +272,7 @@ impl Configuration {
                 .swapchain_device
                 .get_swapchain_images(self.swapchain)
                 .expect("Failed to retrieve swapchain images");
-            
         }
-
     }
 
     fn recreate_swapchain_image_views(&mut self) {
@@ -289,7 +307,6 @@ impl Configuration {
                 }
             })
             .collect::<Vec<ImageView>>();
-
     }
 
     fn recreate_framebuffers(&mut self) {
@@ -347,13 +364,12 @@ impl Configuration {
             .dependencies(&subpass_dependency);
 
         unsafe {
-            self.render_pass = 
-                self.logical_device
-                    .create_render_pass(&render_pass_create_info, None)
-                    .unwrap();
+            self.render_pass = self
+                .logical_device
+                .create_render_pass(&render_pass_create_info, None)
+                .unwrap();
         }
     }
-
 
     pub fn create_shader_module<P: AsRef<Path> + std::fmt::Debug + ToString>(
         &mut self,
@@ -386,17 +402,21 @@ impl Configuration {
             .command_pool(self.command_pool)
             .level(CommandBufferLevel::PRIMARY)
             .command_buffer_count(MAX_FLIGHT_FENCES);
-         
-        self.command_buffer = unsafe { self.logical_device.allocate_command_buffers(&command_buffer_allocate_info).unwrap() };
+
+        self.command_buffer = unsafe {
+            self.logical_device
+                .allocate_command_buffers(&command_buffer_allocate_info)
+                .unwrap()
+        };
     }
 
-
-
-   fn recreate_graphics_pipeline(&mut self) {
+    fn recreate_graphics_pipeline(&mut self) {
         let fragment_shader_module = self
-            .create_shader_module(Path::new("src/assets/fragment.spv").to_str().unwrap()).unwrap();
+            .create_shader_module(Path::new("src/assets/fragment.spv").to_str().unwrap())
+            .unwrap();
         let vertex_shader_module = self
-            .create_shader_module(Path::new("src/assets/vertices.spv").to_str().unwrap()).unwrap();
+            .create_shader_module(Path::new("src/assets/vertices.spv").to_str().unwrap())
+            .unwrap();
 
         let name_main: &CStr = c"main";
         let frag_shader_create_info = PipelineShaderStageCreateInfo::default()
@@ -418,7 +438,6 @@ impl Configuration {
         let input_assembly_create_info = PipelineInputAssemblyStateCreateInfo::default()
             .topology(PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
-       
 
         self.viewports = vec![Viewport::default()
             .x(0.0)
@@ -459,7 +478,12 @@ impl Configuration {
 
         let pipeline_color_blend_attachment_state =
             vec![PipelineColorBlendAttachmentState::default()
-                .color_write_mask(ColorComponentFlags::R | ColorComponentFlags::G | ColorComponentFlags::B | ColorComponentFlags::A)
+                .color_write_mask(
+                    ColorComponentFlags::R
+                        | ColorComponentFlags::G
+                        | ColorComponentFlags::B
+                        | ColorComponentFlags::A,
+                )
                 .blend_enable(true)
                 .src_color_blend_factor(BlendFactor::ONE)
                 .dst_color_blend_factor(BlendFactor::ZERO)
@@ -508,6 +532,4 @@ impl Configuration {
                 .unwrap();
         }
     }
-
-
 }
