@@ -3,7 +3,7 @@ use std::mem::offset_of;
 use ash::vk::{
     Format, VertexInputAttributeDescription, VertexInputBindingDescription, VertexInputRate,
 };
-use glm::{Vector2, Vector3};
+use cgmath::{Vector2, Vector3};
 
 struct Vertex {
     pos: Vector2<u32>,
