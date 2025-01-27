@@ -147,7 +147,7 @@ impl QueueFamilyIndices {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SwapchainSupportDetails {
     pub capabilities: ash::vk::SurfaceCapabilitiesKHR,
     pub formats: Vec<ash::vk::SurfaceFormatKHR>,
@@ -155,7 +155,7 @@ pub struct SwapchainSupportDetails {
 }
 
 impl SwapchainSupportDetails {
-    fn query_swapchain_support(
+    pub fn query_swapchain_support(
         instance: &Instance,
         surface_instance: &ash::khr::surface::Instance,
         surface: &SurfaceKHR,
@@ -179,7 +179,7 @@ impl SwapchainSupportDetails {
         }
     }
 
-    fn choose_swap_chain_format(&self) -> SurfaceFormatKHR {
+    pub fn choose_swap_chain_format(&self) -> SurfaceFormatKHR {
         let surface_format_khr = self.formats.iter().find(|format| {
             format.format == Format::B8G8R8_SRGB
                 && format.color_space.eq(&ColorSpaceKHR::SRGB_NONLINEAR)
@@ -192,7 +192,7 @@ impl SwapchainSupportDetails {
         self.formats[0]
     }
 
-    fn choose_present_mode(&self) -> PresentModeKHR {
+    pub fn choose_present_mode(&self) -> PresentModeKHR {
         let present_mode = self
             .present_modes
             .iter()
@@ -204,7 +204,7 @@ impl SwapchainSupportDetails {
         return PresentModeKHR::FIFO;
     }
 
-    fn choose_swap_extent(&self, buffer_width: u32, buffer_height: u32) -> Extent2D {
+    pub fn choose_swap_extent(&self, buffer_width: u32, buffer_height: u32) -> Extent2D {
         if self.capabilities.current_extent.width != u32::max_value() {
             return self.capabilities.current_extent;
         } else {
@@ -228,7 +228,7 @@ impl SwapchainSupportDetails {
 impl ConfigurationBuilder {
     pub fn create_instance(&mut self, window: &Window) -> Result<&mut ConfigurationBuilder, &str> {
         unsafe {
-            self.width = Some(1920); //TODO!
+            self.width = Some(1080); //TODO!
             self.height = Some(1080); //TODO!
 
             self.vulkan_entry =
@@ -952,7 +952,7 @@ impl ConfigurationBuilder {
             vulkan_entry: self.vulkan_entry.clone().unwrap(),
             instance: self.instance.clone().unwrap(),
             debug_instance: self.debug_instance.clone().unwrap(),
-            debug_messenger: self.debug_messenger.unwrap(),
+            debug_messenger: self.debug_messenger.clone().unwrap(),
             command_buffer: self.command_buffer.clone(),
             command_pool: self.command_pool.unwrap(),
             device_extensions: self.device_extensions.clone(),

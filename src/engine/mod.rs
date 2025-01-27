@@ -90,29 +90,13 @@ impl Configuration {
             .unwrap()
     }
 
-    pub fn window_resized(&mut self) {
+    pub fn window_resized(&mut self, size: PhysicalSize<u32>) {
         self.resized_flag = true;
+        self.width = size.width;
+        self.height = size.width;
     }
 
-    fn choose_swap_extent(&self, buffer_width: u32, buffer_height: u32) -> Extent2D {
-        if self.swapchain_support_details.capabilities.current_extent.width != u32::max_value() {
-            return self.swapchain_support_details.capabilities.current_extent;
-        } else {
-            let mut extent_2d = Extent2D::default()
-                .width(buffer_width)
-                .height(buffer_height);
-            extent_2d.width = extent_2d.width.clamp(
-                self.swapchain_support_details.capabilities.min_image_extent.width,
-                self.swapchain_support_details.capabilities.max_image_extent.width,
-            );
-            extent_2d.height = extent_2d.height.clamp(
-                self.swapchain_support_details.capabilities.min_image_extent.height,
-                self.swapchain_support_details.capabilities.max_image_extent.height,
-            );
 
-            return extent_2d;
-        }
-    }
     pub fn record_command_buffer(&self, command_buffer: &CommandBuffer, image_index: u32) {
         let command_buffer_begin_info =
             CommandBufferBeginInfo::default().flags(CommandBufferUsageFlags::empty());
@@ -168,19 +152,18 @@ impl Configuration {
         unsafe {
 
 
-            println!("framebuffer={:?}", self.framebuffers);
             self.logical_device.device_wait_idle().unwrap();
             self.destroy_swapchain();
             self.recreate_swap_chain();
+
             self.recreate_swapchain_image_views();
             self.recreate_render_pass();
+
             self.recreate_graphics_pipeline();
             self.recreate_framebuffers();
+
             self.recreate_command_buffer();
 
-            println!("render_pass={:?}", self.render_pass);
-            println!("graphics_pipelines={:?}", self.graphics_pipelines);
-            println!("framebuffer={:?}", self.framebuffers);
         }
     }
 
@@ -192,21 +175,50 @@ impl Configuration {
             self.logical_device.destroy_pipeline(self.graphics_pipelines[0], None);
             self.logical_device.destroy_render_pass(self.render_pass, None);
             self.image_views.iter().for_each(|v| self.logical_device.destroy_image_view(*v,None));
-            self.swapchain_device.destroy_swapchain(self.swapchain, None); 
+            self.image_views.clear();
+            self.swapchain_device.destroy_swapchain(self.swapchain, None);
+            self.in_flight_fences.resize(self.swapchain_images.len(), Fence::null());
             }
     }
 
 
     fn recreate_swap_chain(&mut self) {
 
-        let extent = self.choose_swap_extent(self.extent.width, self.extent.height);
+    self.swapchain_support_details = SwapchainSupportDetails::query_swapchain_support(
+            &self.instance,
+            &self.surface_instance,
+            &self.surface,
+            &self.physical_device,
+        );
 
+        
+        self.surface_format = 
+            self.swapchain_support_details
+                .choose_swap_chain_format();
+        self.present_mode = 
+            self.swapchain_support_details.choose_present_mode();
+ 
+        self.extent = 
+            self.swapchain_support_details.choose_swap_extent(self.width, self.height);
+
+        self.image_count = self
+            .swapchain_support_details
+            .capabilities
+            .min_image_count
+            + 1;
+        let max_image_count = self
+            .swapchain_support_details
+            .capabilities
+            .max_image_count;
+        if max_image_count > 0 && self.image_count > max_image_count {
+            self.image_count = max_image_count;
+        }
         let mut swapchain_create_info = SwapchainCreateInfoKHR::default()
             .surface(self.surface)
             .min_image_count(self.image_count)
             .image_format(self.surface_format.format)
             .image_color_space(self.surface_format.color_space)
-            .image_extent(extent)
+            .image_extent(self.extent)
             .image_array_layers(1)
             .image_usage(ImageUsageFlags::COLOR_ATTACHMENT)
             .pre_transform(
@@ -236,7 +248,6 @@ impl Configuration {
                 .create_swapchain(&swapchain_create_info, None)
                 .expect("Failed to create swapchain");
 
-            info!("Swapchain recreated!");
             self.swapchain_images = self
                 .swapchain_device
                 .get_swapchain_images(self.swapchain)
@@ -244,8 +255,6 @@ impl Configuration {
             
         }
 
-        println!("SWAPCHAIN={:?}, {:?}", self.swapchain, self.swapchain_images);
-        info!("Swapchain images retrieved ");
     }
 
     fn recreate_swapchain_image_views(&mut self) {
@@ -281,20 +290,17 @@ impl Configuration {
             })
             .collect::<Vec<ImageView>>();
 
-        println!("SWAPCHAIN_IMAGES={:?}", self.swapchain_images);
-        info!("Swapchain recreated!");
     }
 
     fn recreate_framebuffers(&mut self) {
-        let extent = self.extent;
         for image_view in self.image_views.clone() {
             let attachments = [image_view];
 
             let framebuffer_create_info = FramebufferCreateInfo::default()
                 .attachments(&attachments)
                 .render_pass(self.render_pass)
-                .width(extent.width)
-                .height(extent.height)
+                .width(self.extent.width)
+                .height(self.extent.height)
                 .layers(1);
             unsafe {
                 self.framebuffers.push(
@@ -304,7 +310,6 @@ impl Configuration {
                 );
             }
         }
-        info!("Framebuffers recreated");
     }
 
     pub fn recreate_render_pass(&mut self) {
@@ -347,7 +352,6 @@ impl Configuration {
                     .create_render_pass(&render_pass_create_info, None)
                     .unwrap();
         }
-        info!("Renderpass has been re-initialized!");
     }
 
 
@@ -384,7 +388,6 @@ impl Configuration {
             .command_buffer_count(MAX_FLIGHT_FENCES);
          
         self.command_buffer = unsafe { self.logical_device.allocate_command_buffers(&command_buffer_allocate_info).unwrap() };
-        info!("Command Buffers have been allocated");
     }
 
 
@@ -415,7 +418,8 @@ impl Configuration {
         let input_assembly_create_info = PipelineInputAssemblyStateCreateInfo::default()
             .topology(PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
-        
+       
+
         self.viewports = vec![Viewport::default()
             .x(0.0)
             .y(0.0)
@@ -423,11 +427,9 @@ impl Configuration {
             .height(self.extent.height as f32)
             .min_depth(0.0)
             .max_depth(1.0)];
-
         self.scissors = vec![Rect2D::default()
             .offset(Offset2D::default().x(0).y(0))
             .extent(self.extent)];
-
         let pipeline_dynamic_states_create_info = PipelineDynamicStateCreateInfo::default()
             .dynamic_states(&dynamic_states)
             .flags(PipelineDynamicStateCreateFlags::empty());
@@ -457,8 +459,8 @@ impl Configuration {
 
         let pipeline_color_blend_attachment_state =
             vec![PipelineColorBlendAttachmentState::default()
-                .color_write_mask(ColorComponentFlags::RGBA)
-                .blend_enable(false)
+                .color_write_mask(ColorComponentFlags::R | ColorComponentFlags::G | ColorComponentFlags::B | ColorComponentFlags::A)
+                .blend_enable(true)
                 .src_color_blend_factor(BlendFactor::ONE)
                 .dst_color_blend_factor(BlendFactor::ZERO)
                 .color_blend_op(BlendOp::ADD)
@@ -469,8 +471,7 @@ impl Configuration {
         let color_blend_state_create_info = PipelineColorBlendStateCreateInfo::default()
             .logic_op_enable(false)
             .logic_op(LogicOp::COPY)
-            .attachments(&pipeline_color_blend_attachment_state)
-            .blend_constants([0.0, 0.0, 0.0, 0.0]); // OPTIONAL
+            .attachments(&pipeline_color_blend_attachment_state);
 
         let pipeline_layout_create_info = PipelineLayoutCreateInfo::default();
         unsafe {
@@ -497,7 +498,6 @@ impl Configuration {
                 .subpass(0)
                 .depth_stencil_state(&depth_stencil_state)];
 
-            info!("Graphics Pipeline Create Info created!");
             self.graphics_pipelines = self
                 .logical_device
                 .create_graphics_pipelines(
@@ -507,7 +507,6 @@ impl Configuration {
                 )
                 .unwrap();
         }
-        info!("Graphics Pipeline recreated");
     }
 
 

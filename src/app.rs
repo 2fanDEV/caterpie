@@ -24,13 +24,11 @@ impl ApplicationHandler for App {
     ) {
         match &mut self.engine {
             Some(engine) => {
-                println!("draw frame");
                 engine.draw_frame();
                 match event {
                     event::WindowEvent::Resized(size) => {
-                        engine.window_resized();
+                        engine.window_resized(size);
 
-                        debug!("WINDOW RESIZED EVENT");
                     },
                     event::WindowEvent::KeyboardInput { device_id, event, is_synthetic } => {
                        match event {

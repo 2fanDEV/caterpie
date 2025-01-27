@@ -2,6 +2,7 @@ use std::ops::Add;
 
 use ash::vk::{CommandBufferResetFlags, PipelineStageFlags, PresentInfoKHR, SubmitInfo};
 use log::{error, info};
+use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use crate::engine::configuration_builder::MAX_FLIGHT_FENCES;
@@ -18,13 +19,12 @@ impl Engine {
         Ok(Self { configuration })
     }
 
-    pub fn window_resized(&mut self) {
-        self.configuration.window_resized();
+    pub fn window_resized(&mut self, size: PhysicalSize<u32>) {
+        self.configuration.window_resized(size);
     }
 
     pub fn draw_frame(&mut self) {
         let current_frame = self.configuration.frame as usize;
-        info!("current_frame: {}", current_frame);
         let device = &self.configuration.logical_device.clone();
         let fences = self.configuration.in_flight_fences.clone();
         let command_buffer = self.configuration.command_buffer[current_frame];
@@ -74,14 +74,12 @@ impl Engine {
             let wait_stages = vec![PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
             let swapchains = vec![self.configuration.swapchain];
 
-            println!("{:?}, {:?}, {:?}", wait_semaphores, signal_semaphores, command_buffer);
             let submit_info = vec![SubmitInfo::default()
                 .wait_semaphores(&wait_semaphores)
                 .wait_dst_stage_mask(&wait_stages)
                 .command_buffers(&command_buffer)
                 .signal_semaphores(&signal_semaphores)];
             let image_indices = vec![next_image_index];
-            info!("image indice: {image_indices:?}");
             device
                 .queue_submit(
                     self.configuration.presentation_queue,
