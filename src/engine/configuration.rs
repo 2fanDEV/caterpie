@@ -5,9 +5,10 @@ use std::{
 };
 
 use ash::vk::{
-    AccessFlags, Fence, FenceCreateFlags, FenceCreateInfo, PipelineInputAssemblyStateCreateInfo,
-    PipelineStageFlags, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubpassDependency,
-    SUBPASS_EXTERNAL,
+    AccessFlags, ClearColorValue, ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags,
+    Fence, FenceCreateFlags, FenceCreateInfo, PipelineInputAssemblyStateCreateInfo,
+    PipelineStageFlags, RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo,
+    SubpassContents, SubpassDependency, SUBPASS_EXTERNAL,
 };
 use ash::{
     util::read_spv,
@@ -39,37 +40,36 @@ use ash::{
 };
 use log::*;
 use winit::{
+    dpi::PhysicalSize,
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::Window,
 };
 
 use crate::utils;
 
-use super::Configuration;
-
 pub const MAX_FLIGHT_FENCES: u32 = 2;
 
 #[allow(clippy::pedantic)]
-#[derive(Default)]
-pub struct ConfigurationBuilder {
+#[derive(Default, Clone)]
+pub struct Configuration {
     vulkan_entry: Option<Entry>,
     instance: Option<Instance>,
     physical_device: Option<PhysicalDevice>,
     physical_device_features: Option<PhysicalDeviceFeatures>,
     queue_family_indices: Option<QueueFamilyIndices>,
-    logical_device: Option<Device>,
-    graphics_queue: Option<Queue>,
-    presentation_queue: Option<Queue>,
+    pub logical_device: Option<Device>,
+    pub graphics_queue: Option<Queue>,
+    pub presentation_queue: Option<Queue>,
     device_extensions: Vec<*const i8>,
     surface_instance: Option<ash::khr::surface::Instance>,
-    surface: Option<SurfaceKHR>,
+    pub surface: Option<SurfaceKHR>,
     surface_format: Option<SurfaceFormatKHR>,
     present_mode: Option<PresentModeKHR>,
     extent: Option<Extent2D>,
     image_count: u32,
     swapchain_support_details: Option<SwapchainSupportDetails>,
-    swapchain_device: Option<ash::khr::swapchain::Device>,
-    swapchain: Option<SwapchainKHR>,
+    pub swapchain_device: Option<ash::khr::swapchain::Device>,
+    pub swapchain: Option<SwapchainKHR>,
     swapchain_images: Vec<Image>,
     image_views: Vec<ImageView>,
     viewports: Vec<Viewport>,
@@ -78,16 +78,18 @@ pub struct ConfigurationBuilder {
     render_pass: Option<RenderPass>,
     graphics_pipelines: Vec<Pipeline>,
 
-    framebuffers: Vec<Framebuffer>,
-    command_pool: Option<CommandPool>,
-    command_buffer: Vec<CommandBuffer>,
+    pub framebuffers: Vec<Framebuffer>,
+    pub command_pool: Option<CommandPool>,
+    pub command_buffer: Vec<CommandBuffer>,
 
-    image_available_semaphores: Vec<Semaphore>,
-    render_finished_semaphores: Vec<Semaphore>,
-    in_flight_fences: Vec<Fence>,
+    pub image_available_semaphores: Vec<Semaphore>,
+    pub render_finished_semaphores: Vec<Semaphore>,
+    pub in_flight_fences: Vec<Fence>,
 
-    width: Option<u32>,
-    height: Option<u32>,
+    width: u32,
+    height: u32,
+
+    pub window_resized: bool,
 
     debug_instance: Option<ash::ext::debug_utils::Instance>,
     debug_messenger: Option<DebugUtilsMessengerEXT>,
@@ -227,12 +229,35 @@ impl SwapchainSupportDetails {
     }
 }
 
-impl ConfigurationBuilder {
-    pub fn create_instance(&mut self, window: &Window) -> Result<&mut ConfigurationBuilder, &str> {
+impl Configuration {
+    pub fn default() -> Self {
+        return Self {
+            width: 1920,
+            height: 1080,
+            window_resized: false,
+            debug_instance: None,
+            in_flight_fences: Vec::new(),
+            render_finished_semaphores: Vec::new(),
+            image_available_semaphores: Vec::new(),
+            command_buffer: Vec::new(),
+            framebuffers: Vec::new(),
+            graphics_pipelines: Vec::new(),
+            scissors: Vec::new(),
+            viewports: Vec::new(),
+            image_views: Vec::new(),
+            swapchain_images: Vec::new(),
+            logical_device: None,
+            swapchain_device: None,
+            swapchain_support_details: None,
+            surface_instance: None,
+            device_extensions: Vec::new(),
+            instance: None,
+            vulkan_entry: None,
+            ..Default::default()
+        };
+    }
+    pub fn create_instance(&mut self, window: &Window) -> Result<&mut Configuration, &str> {
         unsafe {
-            self.width = Some(1080); //TODO!
-            self.height = Some(1080); //TODO!
-
             self.vulkan_entry = Some(
                 Entry::load_from("/Users/tufan/VulkanSDK/1.3.296.0/macOS/lib/libvulkan.dylib")
                     .expect("Failed to find vulkan library on this machine"),
@@ -312,7 +337,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    pub fn create_surface(&mut self, window: &Window) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_surface(&mut self, window: &Window) -> Result<&mut Configuration, &str> {
         self.surface_instance = Some(ash::khr::surface::Instance::new(
             self.vulkan_entry.as_ref().unwrap(),
             self.instance.as_ref().unwrap(),
@@ -333,7 +358,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    pub fn pick_physical_device(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn pick_physical_device(&mut self) -> Result<&mut Configuration, &str> {
         unsafe {
             let instance = self.instance.as_ref().unwrap();
             let physical_devices = instance
@@ -437,7 +462,7 @@ impl ConfigurationBuilder {
         Err("Validation Layers are not present on this machine")
     }
 
-    pub fn create_logical_device(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_logical_device(&mut self) -> Result<&mut Configuration, &str> {
         let instance = self.instance.as_ref().unwrap();
         self.queue_family_indices = QueueFamilyIndices::find_queue_family_indices(
             instance.clone(),
@@ -495,7 +520,7 @@ impl ConfigurationBuilder {
         }
     }
 
-    pub fn create_swap_chain(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_swap_chain(&mut self) -> Result<&mut Configuration, &str> {
         self.swapchain_support_details = Some(SwapchainSupportDetails::query_swapchain_support(
             self.instance.as_ref().unwrap(),
             self.surface_instance.as_ref().unwrap(),
@@ -519,7 +544,7 @@ impl ConfigurationBuilder {
             self.swapchain_support_details
                 .as_ref()
                 .unwrap()
-                .choose_swap_extent(self.width.unwrap(), self.height.unwrap()),
+                .choose_swap_extent(self.width, self.height),
         );
 
         self.image_count = self
@@ -601,7 +626,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    pub fn create_swapchain_image_views(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_swapchain_image_views(&mut self) -> Result<&mut Configuration, &str> {
         let device = self.logical_device.as_ref().unwrap();
         let component_mapping = ComponentMapping::default()
             .r(ComponentSwizzle::IDENTITY)
@@ -662,7 +687,7 @@ impl ConfigurationBuilder {
         }
     }
 
-    pub fn create_render_pass(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_render_pass(&mut self) -> Result<&mut Configuration, &str> {
         let attachment_description = vec![AttachmentDescription::default()
             .format(self.surface_format.as_ref().unwrap().format)
             .samples(SampleCountFlags::TYPE_1)
@@ -707,7 +732,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    pub fn create_graphics_pipeline(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_graphics_pipeline(&mut self) -> Result<&mut Configuration, &str> {
         let fragment_shader_module = self
             .create_shader_module(Path::new("src/assets/fragment.spv").to_str().unwrap())
             .unwrap();
@@ -834,7 +859,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    pub fn create_framebuffers(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_framebuffers(&mut self) -> Result<&mut Configuration, &str> {
         let extent = self.extent.unwrap();
         for image_view in self.image_views.clone() {
             let attachments = [image_view];
@@ -859,7 +884,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    pub fn create_command_pool(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_command_pool(&mut self) -> Result<&mut Configuration, &str> {
         let queue_family_indices = self.queue_family_indices.unwrap();
 
         let command_pool_create_info = CommandPoolCreateInfo::default()
@@ -878,7 +903,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    pub fn create_command_buffer(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_command_buffer(&mut self) -> Result<&mut Configuration, &str> {
         let command_buffer_allocate_info = CommandBufferAllocateInfo::default()
             .command_pool(self.command_pool.unwrap())
             .level(CommandBufferLevel::PRIMARY)
@@ -895,7 +920,7 @@ impl ConfigurationBuilder {
         Ok(self)
     }
 
-    pub fn create_sync_objects(&mut self) -> Result<&mut ConfigurationBuilder, &str> {
+    pub fn create_sync_objects(&mut self) -> Result<&mut Configuration, &str> {
         for i in 0..MAX_FLIGHT_FENCES {
             self.image_available_semaphores
                 .push(self.create_semaphore().unwrap());
@@ -958,63 +983,185 @@ impl ConfigurationBuilder {
         }
         0
     }
+    pub fn record_command_buffer(&mut self, command_buffer: &CommandBuffer, image_index: u32) {
+        let command_buffer_begin_info =
+            CommandBufferBeginInfo::default().flags(CommandBufferUsageFlags::empty());
+        unsafe {
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .begin_command_buffer(*command_buffer, &command_buffer_begin_info)
+                .unwrap();
+        }
+        let framebuffer = self
+            .framebuffers
+            .get(image_index as usize)
+            .expect("Failed to get framebuffer at given image index");
 
-    pub fn build(&self) -> Result<Configuration, &str> {
-        Ok(Configuration {
-            vulkan_entry: self.vulkan_entry.clone().unwrap(),
-            instance: self.instance.clone().unwrap(),
-            debug_instance: self.debug_instance.clone().unwrap(),
-            debug_messenger: self.debug_messenger.clone().unwrap(),
-            command_buffer: self.command_buffer.clone(),
-            command_pool: self.command_pool.unwrap(),
+        let clear_color = vec![ClearValue {
+            color: ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 0.0],
+            },
+        }];
+
+        let render_pass_begin_info = RenderPassBeginInfo::default()
+            .render_pass(self.render_pass.unwrap())
+            .framebuffer(*framebuffer)
+            .render_area(
+                Rect2D::default()
+                    .extent(self.extent.unwrap())
+                    .offset(ash::vk::Offset2D { x: 0, y: 0 }),
+            )
+            .clear_values(&clear_color);
+        unsafe {
+            self.logical_device.as_ref().unwrap().cmd_begin_render_pass(
+                *command_buffer,
+                &render_pass_begin_info,
+                SubpassContents::INLINE,
+            );
+            self.logical_device.as_ref().unwrap().cmd_bind_pipeline(
+                *command_buffer,
+                PipelineBindPoint::GRAPHICS,
+                self.graphics_pipelines[0],
+            );
+            self.logical_device.as_ref().unwrap().cmd_set_viewport(
+                *command_buffer,
+                0,
+                &self.viewports,
+            );
+            self.logical_device.as_ref().unwrap().cmd_set_scissor(
+                *command_buffer,
+                0,
+                &self.scissors,
+            );
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .cmd_draw(*command_buffer, 3, 1, 0, 0);
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .cmd_end_render_pass(*command_buffer);
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .end_command_buffer(*command_buffer)
+                .unwrap();
+        }
+    }
+
+    pub fn window_resized(&mut self, size: PhysicalSize<u32>) {
+        self.window_resized = true;
+        self.width = size.width;
+        self.height = size.height;
+    }
+
+    pub fn build(&mut self) -> Configuration {
+        Configuration {
+            vulkan_entry: self.vulkan_entry.clone(),
+            instance: self.instance.clone(),
+            physical_device: self.physical_device,
+            physical_device_features: self.physical_device_features,
+            queue_family_indices: self.queue_family_indices,
+            logical_device: self.logical_device.clone(),
+            graphics_queue: self.graphics_queue,
+            presentation_queue: self.presentation_queue,
             device_extensions: self.device_extensions.clone(),
-            extent: self.extent.unwrap(),
-            framebuffers: self.framebuffers.clone(),
-            graphics_pipelines: self.graphics_pipelines.clone(),
-            graphics_queue: self.graphics_queue.unwrap(),
-
-            height: self.height.unwrap(),
-            width: self.width.clone().unwrap(),
-
+            surface_instance: self.surface_instance.clone(),
+            surface: self.surface,
+            surface_format: self.surface_format,
+            present_mode: self.present_mode,
+            extent: self.extent,
             image_count: self.image_count,
-            image_views: self.image_views.clone(),
-            logical_device: self.logical_device.clone().unwrap(),
-            physical_device: self.physical_device.unwrap(),
-
-            present_mode: self.present_mode.unwrap(),
-
-            render_pass: self.render_pass.unwrap(),
-            physical_device_features: self.physical_device_features.unwrap(),
-            presentation_queue: self.presentation_queue.unwrap(),
-            queue_family_indices: self.queue_family_indices.unwrap(),
-            scissors: self.scissors.clone(),
-            surface: self.surface.unwrap(),
-            surface_format: self.surface_format.unwrap(),
-            surface_instance: self.surface_instance.clone().unwrap(),
-            swapchain: self.swapchain.unwrap(),
-            swapchain_device: self.swapchain_device.clone().unwrap(),
+            swapchain_support_details: self.swapchain_support_details.clone(),
+            swapchain_device: self.swapchain_device.clone(),
+            swapchain: self.swapchain,
             swapchain_images: self.swapchain_images.clone(),
-            swapchain_support_details: self.swapchain_support_details.clone().unwrap(),
+            image_views: self.image_views.clone(),
             viewports: self.viewports.clone(),
+            scissors: self.scissors.clone(),
+
+            render_pass: self.render_pass,
+            graphics_pipelines: self.graphics_pipelines.clone(),
+
+            framebuffers: self.framebuffers.clone(),
+            command_pool: self.command_pool,
+            command_buffer: self.command_buffer.clone(),
+
             image_available_semaphores: self.image_available_semaphores.clone(),
             render_finished_semaphores: self.render_finished_semaphores.clone(),
             in_flight_fences: self.in_flight_fences.clone(),
-            frame: 0,
-            resized_flag: false,
-        })
-    }
-}
 
-impl Drop for ConfigurationBuilder {
-    fn drop(&mut self) {
-        //      unsafe { self.instance.as_ref().unwrap().destroy_instance(None); }
+            width: self.width,
+            height: self.height,
+
+            window_resized: self.window_resized,
+
+            debug_instance: self.debug_instance.clone(),
+            debug_messenger: self.debug_messenger,
+        }
+    }
+
+    pub fn recreate_swapchain(&mut self) {
+        unsafe {
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .device_wait_idle()
+                .unwrap();
+            self.destroy_swapchain();
+            self.create_swap_chain();
+
+            self.create_swapchain_image_views();
+            self.create_render_pass();
+
+            self.create_graphics_pipeline();
+            self.create_framebuffers();
+
+            self.create_command_buffer();
+        }
+    }
+
+    fn destroy_swapchain(&mut self) {
+        unsafe {
+            self.framebuffers.iter().for_each(|f| {
+                self.logical_device
+                    .as_ref()
+                    .unwrap()
+                    .destroy_framebuffer(*f, None)
+            });
+            self.framebuffers.clear();
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .free_command_buffers(self.command_pool.unwrap(), &self.command_buffer);
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .destroy_pipeline(self.graphics_pipelines[0], None);
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .destroy_render_pass(self.render_pass.unwrap(), None);
+            self.image_views.iter().for_each(|v| {
+                self.logical_device
+                    .as_ref()
+                    .unwrap()
+                    .destroy_image_view(*v, None)
+            });
+            self.image_views.clear();
+            self.swapchain_device
+                .as_ref()
+                .unwrap()
+                .destroy_swapchain(self.swapchain.unwrap(), None);
+            self.in_flight_fences
+                .resize(self.swapchain_images.len(), Fence::null());
+        }
     }
 }
 
 impl Drop for Configuration {
     fn drop(&mut self) {
-        unsafe {
-            self.instance.destroy_instance(None);
-        };
+        return;
     }
 }

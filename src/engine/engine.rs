@@ -1,22 +1,40 @@
 use std::ops::Add;
 
 use ash::vk::{CommandBufferResetFlags, PipelineStageFlags, PresentInfoKHR, SubmitInfo};
+use log::warn;
 use log::{error, info};
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-use crate::engine::configuration_builder::MAX_FLIGHT_FENCES;
+use crate::engine::configuration::MAX_FLIGHT_FENCES;
+use crate::engine::configuration::Configuration;
 
-use crate::Configuration;
-
+#[derive(Default)]
 pub struct Engine {
     configuration: Configuration,
+    frame: u32
 }
 
 impl Engine {
     pub fn init(window: &Window) -> Result<Engine, &str> {
-        let configuration: Configuration = Configuration::default(window);
-        Ok(Self { configuration })
+        let configuration = Configuration::default()
+            .create_instance(window).unwrap()
+            .create_surface(window).unwrap()
+            .pick_physical_device().unwrap()
+            .create_logical_device().unwrap()
+            .create_swap_chain().unwrap()
+            .create_swapchain_image_views().unwrap()
+            .create_render_pass().unwrap()
+            .create_graphics_pipeline().unwrap()
+            .create_framebuffers().unwrap()
+            .create_command_pool().unwrap()
+            .create_command_buffer().unwrap()
+            .create_sync_objects().unwrap()
+            .build();
+        Ok(Self {
+            configuration,
+            frame: 0,
+        })
     }
 
     pub fn window_resized(&mut self, size: PhysicalSize<u32>) {
@@ -24,10 +42,11 @@ impl Engine {
     }
 
     pub fn draw_frame(&mut self) {
-        let current_frame = self.configuration.frame as usize;
-        let device = &self.configuration.logical_device.clone();
-        let fences = self.configuration.in_flight_fences.clone();
-        let command_buffer = self.configuration.command_buffer[current_frame];
+        let current_frame = self.frame as usize;
+        let configuration = &mut self.configuration;
+        let device = configuration.logical_device.clone().unwrap();
+        let fences = configuration.in_flight_fences.clone();
+        let command_buffer = configuration.command_buffer[current_frame];
         unsafe {
             match device.wait_for_fences(&[fences[current_frame]], true, u64::MAX) {
                 Ok(_) => {}
@@ -37,10 +56,10 @@ impl Engine {
                 }
             }
 
-            let next_image_query_result = self.configuration.swapchain_device.acquire_next_image(
-                self.configuration.swapchain,
+            let next_image_query_result = configuration.swapchain_device.as_ref().unwrap().acquire_next_image(
+                configuration.swapchain.unwrap(),
                 u64::MAX,
-                self.configuration.image_available_semaphores[current_frame],
+                configuration.image_available_semaphores[current_frame],
                 fences[current_frame],
             );
 
@@ -51,7 +70,8 @@ impl Engine {
                     next_image_index = next_image.0;
                 }
                 Err(_) => {
-                    self.configuration.recreate_swapchain();
+                    configuration.recreate_swapchain();
+                    return
                 }
             }
 
@@ -63,16 +83,15 @@ impl Engine {
                 .reset_command_buffer(command_buffer, CommandBufferResetFlags::default())
                 .unwrap();
 
-            self.configuration
-                .record_command_buffer(&command_buffer, next_image_index);
+            configuration.record_command_buffer(&command_buffer, next_image_index);
 
             let wait_semaphores =
-                vec![self.configuration.image_available_semaphores[current_frame]];
+                vec![configuration.image_available_semaphores[current_frame]];
             let signal_semaphores =
-                vec![self.configuration.render_finished_semaphores[current_frame]];
-            let command_buffer = vec![self.configuration.command_buffer[current_frame]];
+                vec![configuration.render_finished_semaphores[current_frame]];
+            let command_buffer = vec![configuration.command_buffer[current_frame]];
             let wait_stages = vec![PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-            let swapchains = vec![self.configuration.swapchain];
+            let swapchains = vec![configuration.swapchain.unwrap()];
 
             let submit_info = vec![SubmitInfo::default()
                 .wait_semaphores(&wait_semaphores)
@@ -82,7 +101,7 @@ impl Engine {
             let image_indices = vec![next_image_index];
             device
                 .queue_submit(
-                    self.configuration.presentation_queue,
+                    configuration.presentation_queue.unwrap(),
                     &submit_info,
                     fences[current_frame],
                 )
@@ -95,15 +114,17 @@ impl Engine {
 
             self.configuration
                 .swapchain_device
-                .queue_present(self.configuration.presentation_queue, &present_info)
+                .as_ref()
+                .unwrap()
+                .queue_present(self.configuration.presentation_queue.unwrap(), &present_info)
                 .unwrap();
 
-            if self.configuration.resized_flag {
-                self.configuration.resized_flag = false;
+            if self.configuration.window_resized {
+                self.configuration.window_resized = false;
                 self.configuration.recreate_swapchain();
             }
 
-            self.configuration.frame = (self.configuration.frame.add(1)) % MAX_FLIGHT_FENCES;
+            self.frame = (self.frame.add(1)) % MAX_FLIGHT_FENCES;
         };
     }
 }
