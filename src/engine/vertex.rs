@@ -5,20 +5,27 @@ use ash::vk::{
 };
 use cgmath::{Vector2, Vector3};
 
-struct Vertex {
-    pos: Vector2<u32>,
-    color: Vector3<u32>,
+
+#[derive(Debug, Clone)]
+pub struct Vertex {
+    pos: Vector2<f32>,
+    color: Vector3<f32>,
 }
 
 impl Vertex {
-    pub fn get_binding_description() -> VertexInputBindingDescription {
-        return VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(size_of::<Vertex>() as u32)
-            .input_rate(VertexInputRate::VERTEX);
+
+    pub fn new(pos: Vector2<f32>, color: Vector3<f32>) -> Self {
+                Vertex {pos,  color}
     }
 
-    pub fn get_attribute_description() -> [VertexInputAttributeDescription; 2] {
+    pub fn get_binding_description() -> Vec<VertexInputBindingDescription> {
+        return vec![VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(size_of::<Vertex>() as u32)
+            .input_rate(VertexInputRate::VERTEX)];
+    }
+
+    pub fn get_attribute_description() -> Vec<VertexInputAttributeDescription> {
         let mut attribute_descriptons: [VertexInputAttributeDescription; 2] =
             [Default::default(); 2];
         attribute_descriptons[0] = attribute_descriptons[0]
@@ -34,6 +41,6 @@ impl Vertex {
             .format(Format::R32G32B32_SFLOAT)
             .offset(offset_of!(Vertex, color) as u32);
 
-        attribute_descriptons
+        attribute_descriptons.to_vec()
     }
 }

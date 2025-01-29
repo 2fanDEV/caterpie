@@ -5,10 +5,7 @@ use std::{
 };
 
 use ash::vk::{
-    AccessFlags, ClearColorValue, ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags,
-    Fence, FenceCreateFlags, FenceCreateInfo, PipelineInputAssemblyStateCreateInfo,
-    PipelineStageFlags, RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo,
-    SubpassContents, SubpassDependency, SUBPASS_EXTERNAL,
+    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue, ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceMemory, DeviceSize, Fence, FenceCreateFlags, FenceCreateInfo, MemoryAllocateInfo, MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineStageFlags, RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo, SubmitInfo2KHR, SubpassContents, SubpassDependency, SUBPASS_EXTERNAL
 };
 use ash::{
     util::read_spv,
@@ -38,12 +35,15 @@ use ash::{
     },
     Device, Entry, Instance,
 };
+use cgmath::{vec2, vec3};
 use log::*;
 use winit::{
     dpi::PhysicalSize,
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::Window,
 };
+
+use crate::engine::vertex::*;
 
 use crate::utils;
 
@@ -86,6 +86,8 @@ pub struct Configuration {
     pub render_finished_semaphores: Vec<Semaphore>,
     pub in_flight_fences: Vec<Fence>,
 
+    pub vertices: Vec<Vertex>,
+    pub vertex_buffer: Buffer,
     width: u32,
     height: u32,
 
@@ -253,6 +255,7 @@ impl Configuration {
             device_extensions: Vec::new(),
             instance: None,
             vulkan_entry: None,
+            vertices: Vec::new(),
             ..Default::default()
         };
     }
@@ -740,6 +743,12 @@ impl Configuration {
             .create_shader_module(Path::new("src/assets/vertices.spv").to_str().unwrap())
             .unwrap();
 
+        self.vertices = vec![
+            Vertex::new(vec2(0.0, -0.5), vec3(1.0, 0.0, 0.0)),
+            Vertex::new(vec2(0.5, 0.5), vec3(0.0, 1.0, 0.0)),
+            Vertex::new(vec2(-0.5, 0.5), vec3(0.0, 0.0, 1.0)),
+        ];
+
         let name_main: &CStr = c"main";
         let frag_shader_create_info = PipelineShaderStageCreateInfo::default()
             .module(fragment_shader_module)
@@ -755,7 +764,11 @@ impl Configuration {
 
         let dynamic_states = vec![DynamicState::VIEWPORT, DynamicState::SCISSOR];
 
-        let vertex_input_state = PipelineVertexInputStateCreateInfo::default();
+        let binding_description = Vertex::get_binding_description();
+        let attribute_description = Vertex::get_attribute_description();
+        let vertex_input_state = PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&binding_description)
+            .vertex_attribute_descriptions(&attribute_description);
 
         let input_assembly_create_info = PipelineInputAssemblyStateCreateInfo::default()
             .topology(PrimitiveTopology::TRIANGLE_LIST)
@@ -1050,6 +1063,95 @@ impl Configuration {
         }
     }
 
+    fn create_buffer(
+        device: &Device,
+        device_size: DeviceSize,
+        usage: BufferUsageFlags,
+        memory_property_flags: MemoryPropertyFlags,
+        buffer_memory: &DeviceMemory,
+    ) -> Buffer {
+        let buffer_create_info = BufferCreateInfo::default()
+            .size(device_size)
+            .usage(usage)
+            .sharing_mode(SharingMode::EXCLUSIVE);
+
+        unsafe {
+            let buffer = device.create_buffer(&buffer_create_info, None).unwrap();
+
+            let mem_requirements = device.get_buffer_memory_requirements(buffer);
+            let memory_alloc_info = MemoryAllocateInfo::default()
+                .allocation_size(mem_requirements.size)
+                .memory_type_index(mem_requirements.memory_type_bits);
+
+            let buffer_memory = device.allocate_memory(&memory_alloc_info, None).unwrap();
+            device.bind_buffer_memory(buffer, buffer_memory, 0).unwrap();
+            buffer
+        }
+    }
+
+    fn find_memory_type(&self, type_filter: u32, MemoryPropertyFlags) -> u32 {
+        unsafe { let memory_properties=  self.instance.unwrap().get_physical_device_memory_properties(self.physical_device.unwrap()); 
+
+
+        };
+    }
+
+
+    pub fn create_vertex_buffer(&mut self) -> Result<&mut Configuration, ()> {
+        let buffer_size = size_of::<Vertex>() * self.vertices.len();
+        let device_memory
+        let staging_buffer = Self::create_buffer(
+            self.logical_device.as_ref().unwrap(),
+            buffer_size as u64,
+            BufferUsageFlags::VERTEX_BUFFER,
+            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+        );
+
+        self.logical_device.unwrap().map_memory(memory, offset, size, flags)
+
+
+        Ok(self)
+    }
+
+
+
+    fn copy_buffer(&self, src_buffer: Buffer, dst_buffer: Buffer, size: DeviceSize) {
+        let command_buffer_allocate_info = CommandBufferAllocateInfo::default()
+            .level(CommandBufferLevel::PRIMARY)
+            .command_pool(self.command_pool.unwrap())
+            .command_buffer_count(1);
+
+        let device = self.logical_device.as_ref().unwrap();
+
+        unsafe {
+            let command_buffer = self
+                .logical_device
+                .as_ref()
+                .unwrap()
+                .allocate_command_buffers(&command_buffer_allocate_info)
+                .unwrap();
+
+            let begin_info =
+                CommandBufferBeginInfo::default().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .begin_command_buffer(command_buffer[0], &begin_info)
+                .unwrap();
+            let buffer_copy = vec![BufferCopy::default().src_offset(0).dst_offset(0).size(size)];
+
+            device.cmd_copy_buffer(command_buffer[0], src_buffer, dst_buffer, &buffer_copy);
+
+            device.end_command_buffer(command_buffer[0]).unwrap();
+
+            let submit_info = &[SubmitInfo::default().command_buffers(&command_buffer)];
+            device.queue_submit(self.graphics_queue.unwrap(), submit_info, Fence::null()).unwrap();
+            device.queue_wait_idle(self.graphics_queue.unwrap()).unwrap();
+            device.free_command_buffers(self.command_pool.unwrap(), &command_buffer);
+        };
+    }
+
     pub fn window_resized(&mut self, size: PhysicalSize<u32>) {
         self.window_resized = true;
         self.width = size.width;
@@ -1092,6 +1194,8 @@ impl Configuration {
             render_finished_semaphores: self.render_finished_semaphores.clone(),
             in_flight_fences: self.in_flight_fences.clone(),
 
+            vertices: self.vertices.clone(),
+            vertex_buffer: self.vertex_buffer.clone(),
             width: self.width,
             height: self.height,
 
@@ -1109,16 +1213,22 @@ impl Configuration {
                 .unwrap()
                 .device_wait_idle()
                 .unwrap();
+
             self.destroy_swapchain();
-            self.create_swap_chain();
-
-            self.create_swapchain_image_views();
-            self.create_render_pass();
-
-            self.create_graphics_pipeline();
-            self.create_framebuffers();
-
-            self.create_command_buffer();
+            let _ = self
+                .create_swap_chain()
+                .unwrap()
+                .create_swapchain_image_views()
+                .unwrap()
+                .create_render_pass()
+                .unwrap()
+                .create_render_pass()
+                .unwrap()
+                .create_graphics_pipeline()
+                .unwrap()
+                .create_framebuffers()
+                .unwrap()
+                .create_command_buffer();
         }
     }
 
