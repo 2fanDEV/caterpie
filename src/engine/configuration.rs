@@ -5,7 +5,7 @@ use std::{
 };
 
 use ash::vk::{
-    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue, ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceMemory, DeviceSize, Fence, FenceCreateFlags, FenceCreateInfo, MemoryAllocateInfo, MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineStageFlags, RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo, SubmitInfo2KHR, SubpassContents, SubpassDependency, SUBPASS_EXTERNAL
+    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue, ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceMemory, DeviceSize, Fence, FenceCreateFlags, FenceCreateInfo, MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineStageFlags, RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo, SubmitInfo2KHR, SubpassContents, SubpassDependency, SUBPASS_EXTERNAL
 };
 use ash::{
     util::read_spv,
@@ -1098,17 +1098,22 @@ impl Configuration {
 
 
     pub fn create_vertex_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        let buffer_size = size_of::<Vertex>() * self.vertices.len();
-        let device_memory
+        unsafe {
+        let buffer_size = (size_of::<Vertex>() * self.vertices.len()) as u64;
+        let staging_memory = DeviceMemory::default();
         let staging_buffer = Self::create_buffer(
             self.logical_device.as_ref().unwrap(),
             buffer_size as u64,
             BufferUsageFlags::VERTEX_BUFFER,
             MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+            &staging_memory
         );
 
-        self.logical_device.unwrap().map_memory(memory, offset, size, flags)
+        let data= self.logical_device.as_ref().unwrap().map_memory(staging_memory, 0, buffer_size, MemoryMapFlags::empty()).unwrap();
+        self.vertices.as_ptr().copy_to_nonoverlapping(data.cast(), buffer_size as usize);
 
+
+        }
 
         Ok(self)
     }
