@@ -5,7 +5,12 @@ use std::{
 };
 
 use ash::vk::{
-    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue, ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceMemory, DeviceSize, Fence, FenceCreateFlags, FenceCreateInfo, MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineStageFlags, RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo, SubmitInfo2KHR, SubpassContents, SubpassDependency, SUBPASS_EXTERNAL
+    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue,
+    ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceMemory, DeviceSize, Fence,
+    FenceCreateFlags, FenceCreateInfo, MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags,
+    PipelineInputAssemblyStateCreateInfo, PipelineStageFlags, RenderPassBeginInfo, Semaphore,
+    SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo, SubmitInfo2KHR, SubpassContents,
+    SubpassDependency, SUBPASS_EXTERNAL,
 };
 use ash::{
     util::read_spv,
@@ -1064,6 +1069,8 @@ impl Configuration {
     }
 
     fn create_buffer(
+        instance: &Instance,
+        physical_device: PhysicalDevice,
         device: &Device,
         device_size: DeviceSize,
         usage: BufferUsageFlags,
@@ -1081,7 +1088,15 @@ impl Configuration {
             let mem_requirements = device.get_buffer_memory_requirements(buffer);
             let memory_alloc_info = MemoryAllocateInfo::default()
                 .allocation_size(mem_requirements.size)
-                .memory_type_index(mem_requirements.memory_type_bits);
+                .memory_type_index(
+                    Self::find_memory_type(
+                        &instance,
+                        physical_device,
+                        mem_requirements.memory_type_bits,
+                        MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+                    )
+                    .expect("FAILED TO FIND MEMORY TYPE"),
+                );
 
             let buffer_memory = device.allocate_memory(&memory_alloc_info, None).unwrap();
             device.bind_buffer_memory(buffer, buffer_memory, 0).unwrap();
@@ -1089,36 +1104,70 @@ impl Configuration {
         }
     }
 
-    fn find_memory_type(&self, type_filter: u32, MemoryPropertyFlags) -> u32 {
-        unsafe { let memory_properties=  self.instance.unwrap().get_physical_device_memory_properties(self.physical_device.unwrap()); 
-
-
-        };
+    fn find_memory_type(
+        instance: &Instance,
+        physical_device: PhysicalDevice,
+        type_filter: u32,
+        properties: MemoryPropertyFlags,
+    ) -> Option<u32> {
+        unsafe {
+            let memory_properties = instance.get_physical_device_memory_properties(physical_device);
+            let memory_types = memory_properties.memory_types.to_vec();
+            for i in 0..memory_properties.memory_type_count {
+                if (type_filter.eq(&(1 << i)))
+                    && memory_types[i as usize].property_flags.eq(&properties)
+                {
+                    return Some(i);
+                }
+            }
+        }
+        None
     }
-
 
     pub fn create_vertex_buffer(&mut self) -> Result<&mut Configuration, ()> {
         unsafe {
-        let buffer_size = (size_of::<Vertex>() * self.vertices.len()) as u64;
-        let staging_memory = DeviceMemory::default();
-        let staging_buffer = Self::create_buffer(
-            self.logical_device.as_ref().unwrap(),
-            buffer_size as u64,
-            BufferUsageFlags::VERTEX_BUFFER,
-            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-            &staging_memory
-        );
+            let instance = self.instance.unwrap();
+            let physical_device = self.physical_device.unwrap();
+            let device = self.logical_device.as_ref().unwrap();
+            let buffer_size = (size_of::<Vertex>() * self.vertices.len()) as u64;
+            let staging_memory = DeviceMemory::default();
+            let buffer_memory = DeviceMemory::default();
+            let staging_buffer = Self::create_buffer(
+                &instance,
+                physical_device,
+                device,
+                buffer_size as u64,
+                BufferUsageFlags::TRANSFER_SRC,
+                MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+                &staging_memory,
+            );
 
-        let data= self.logical_device.as_ref().unwrap().map_memory(staging_memory, 0, buffer_size, MemoryMapFlags::empty()).unwrap();
-        self.vertices.as_ptr().copy_to_nonoverlapping(data.cast(), buffer_size as usize);
+            let data = device
+                .map_memory(staging_memory, 0, buffer_size, MemoryMapFlags::empty())
+                .unwrap();
+            self.vertices
+                .as_ptr()
+                .copy_to_nonoverlapping(data.cast(), buffer_size as usize);
+            device.unmap_memory(staging_memory);
 
+            let vertex_buffer = Self::create_buffer(
+                &instance,
+                physical_device,
+                device,
+                buffer_size as u64,
+                BufferUsageFlags::TRANSFER_DST | BufferUsageFlags::VERTEX_BUFFER,
+                MemoryPropertyFlags::DEVICE_LOCAL,
+                &buffer_memory,
+            );
 
+            self.copy_buffer(staging_buffer, vertex_buffer, buffer_size);
+
+            device.destroy_buffer(staging_buffer, None);
+            device.free_memory(staging_memory, None);
         }
 
         Ok(self)
     }
-
-
 
     fn copy_buffer(&self, src_buffer: Buffer, dst_buffer: Buffer, size: DeviceSize) {
         let command_buffer_allocate_info = CommandBufferAllocateInfo::default()
@@ -1151,8 +1200,12 @@ impl Configuration {
             device.end_command_buffer(command_buffer[0]).unwrap();
 
             let submit_info = &[SubmitInfo::default().command_buffers(&command_buffer)];
-            device.queue_submit(self.graphics_queue.unwrap(), submit_info, Fence::null()).unwrap();
-            device.queue_wait_idle(self.graphics_queue.unwrap()).unwrap();
+            device
+                .queue_submit(self.graphics_queue.unwrap(), submit_info, Fence::null())
+                .unwrap();
+            device
+                .queue_wait_idle(self.graphics_queue.unwrap())
+                .unwrap();
             device.free_command_buffers(self.command_pool.unwrap(), &command_buffer);
         };
     }
