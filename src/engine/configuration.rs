@@ -7,10 +7,10 @@ use std::{
 use ash::vk::{
     AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue,
     ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceMemory, DeviceSize, Fence,
-    FenceCreateFlags, FenceCreateInfo, MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags,
-    PipelineInputAssemblyStateCreateInfo, PipelineStageFlags, RenderPassBeginInfo, Semaphore,
-    SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo, SubmitInfo2KHR, SubpassContents,
-    SubpassDependency, SUBPASS_EXTERNAL,
+    FenceCreateFlags, FenceCreateInfo, IndexType, MemoryAllocateInfo, MemoryMapFlags,
+    MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineStageFlags,
+    RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo,
+    SubpassContents, SubpassDependency, SUBPASS_EXTERNAL,
 };
 use ash::{
     util::read_spv,
@@ -93,6 +93,8 @@ pub struct Configuration {
 
     pub vertices: Vec<Vertex>,
     pub vertex_buffer: Buffer,
+    indices: Vec<u16>,
+    index_buffer: Buffer,
     width: u32,
     height: u32,
 
@@ -261,6 +263,7 @@ impl Configuration {
             instance: None,
             vulkan_entry: None,
             vertices: Vec::new(),
+            indices: Vec::new(),
             ..Default::default()
         };
     }
@@ -749,10 +752,13 @@ impl Configuration {
             .unwrap();
 
         self.vertices = vec![
-            Vertex::new(vec2(0.0, -0.5), vec3(1.0, 0.0, 0.0)),
-            Vertex::new(vec2(0.5, 0.5), vec3(0.0, 1.0, 0.0)),
-            Vertex::new(vec2(-0.5, 0.5), vec3(0.0, 0.0, 1.0)),
+            Vertex::new(vec2(-0.5, -0.5), vec3(1.0, 0.0, 0.0)),
+            Vertex::new(vec2(0.5, -0.5), vec3(0.0, 1.0, 0.0)),
+            Vertex::new(vec2(0.5, 0.5), vec3(0.0, 0.0, 1.0)),
+            Vertex::new(vec2(-0.5, 0.5), vec3(1.0, 1.0, 1.0)),
         ];
+
+        self.indices = vec![0, 1, 2, 2, 3, 0];
 
         let name_main: &CStr = c"main";
         let frag_shader_create_info = PipelineShaderStageCreateInfo::default()
@@ -997,17 +1003,22 @@ impl Configuration {
                         "{message_type:?} [{message_id_name} ({message_id_number})] : {message}\n"
                     );
                 }
+                _ => {
+                    info!(
+                        "{message_type:?} [{message_id_name} ({message_id_number})] : {message}\n"
+                    );
+                }
             }
         }
         0
     }
+
     pub fn record_command_buffer(&mut self, command_buffer: &CommandBuffer, image_index: u32) {
         let command_buffer_begin_info =
             CommandBufferBeginInfo::default().flags(CommandBufferUsageFlags::empty());
+        let device = self.logical_device.as_ref().unwrap();
         unsafe {
-            self.logical_device
-                .as_ref()
-                .unwrap()
+            device
                 .begin_command_buffer(*command_buffer, &command_buffer_begin_info)
                 .unwrap();
         }
@@ -1018,7 +1029,7 @@ impl Configuration {
 
         let clear_color = vec![ClearValue {
             color: ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 0.0],
+                float32: [0.0, 0.0, 0.0, 1.0],
             },
         }];
 
@@ -1032,50 +1043,65 @@ impl Configuration {
             )
             .clear_values(&clear_color);
         unsafe {
-            self.logical_device.as_ref().unwrap().cmd_begin_render_pass(
+            device.cmd_begin_render_pass(
                 *command_buffer,
                 &render_pass_begin_info,
                 SubpassContents::INLINE,
             );
-            self.logical_device.as_ref().unwrap().cmd_bind_pipeline(
+            device.cmd_bind_pipeline(
                 *command_buffer,
                 PipelineBindPoint::GRAPHICS,
                 self.graphics_pipelines[0],
             );
-            self.logical_device.as_ref().unwrap().cmd_set_viewport(
+            device.cmd_set_viewport(*command_buffer, 0, &self.viewports);
+            device.cmd_set_scissor(*command_buffer, 0, &self.scissors);
+            device.cmd_bind_pipeline(
                 *command_buffer,
-                0,
-                &self.viewports,
+                PipelineBindPoint::GRAPHICS,
+                self.graphics_pipelines[0],
             );
-            self.logical_device.as_ref().unwrap().cmd_set_scissor(
-                *command_buffer,
-                0,
-                &self.scissors,
-            );
-            self.logical_device
-                .as_ref()
-                .unwrap()
-                .cmd_draw(*command_buffer, 3, 1, 0, 0);
-            self.logical_device
-                .as_ref()
-                .unwrap()
-                .cmd_end_render_pass(*command_buffer);
-            self.logical_device
-                .as_ref()
-                .unwrap()
-                .end_command_buffer(*command_buffer)
-                .unwrap();
+
+            let vertex_buffers = vec![self.vertex_buffer];
+            let offsets = vec![0];
+
+            device.cmd_bind_vertex_buffers(*command_buffer, 0, &vertex_buffers, &offsets);
+            device.cmd_bind_index_buffer(*command_buffer, self.index_buffer, 0, IndexType::UINT16);
+            //            device.cmd_draw(*command_buffer, self.vertices.len() as u32, 1, 0, 0);
+            device.cmd_draw_indexed(*command_buffer, self.indices.len() as u32, 1, 0, 0, 0);
+            device.cmd_end_render_pass(*command_buffer);
+            device.end_command_buffer(*command_buffer).unwrap();
         }
     }
 
-    fn create_buffer(
+    fn find_memory_type(
+        instance: &Instance,
+        physical_device: PhysicalDevice,
+        type_filter: u32,
+        properties: MemoryPropertyFlags,
+    ) -> Option<u32> {
+        unsafe {
+            let memory_properties = instance.get_physical_device_memory_properties(physical_device);
+            let memory_types = memory_properties.memory_types.to_vec();
+            for i in 0..memory_properties.memory_type_count {
+                if type_filter & (1 << i) != 0
+                    && (memory_types[i as usize].property_flags & properties)
+                        != MemoryPropertyFlags::empty()
+                {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    fn allocate_buffer(
         instance: &Instance,
         physical_device: PhysicalDevice,
         device: &Device,
         device_size: DeviceSize,
         usage: BufferUsageFlags,
         memory_property_flags: MemoryPropertyFlags,
-        buffer_memory: &DeviceMemory,
+        buffer_memory: &mut DeviceMemory,
     ) -> Buffer {
         let buffer_create_info = BufferCreateInfo::default()
             .size(device_size)
@@ -1093,79 +1119,69 @@ impl Configuration {
                         &instance,
                         physical_device,
                         mem_requirements.memory_type_bits,
-                        MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+                        memory_property_flags,
                     )
                     .expect("FAILED TO FIND MEMORY TYPE"),
                 );
 
-            let buffer_memory = device.allocate_memory(&memory_alloc_info, None).unwrap();
-            device.bind_buffer_memory(buffer, buffer_memory, 0).unwrap();
+            *buffer_memory = device.allocate_memory(&memory_alloc_info, None).unwrap();
+            device
+                .bind_buffer_memory(buffer, *buffer_memory, 0)
+                .unwrap();
             buffer
         }
     }
 
-    fn find_memory_type(
-        instance: &Instance,
-        physical_device: PhysicalDevice,
-        type_filter: u32,
-        properties: MemoryPropertyFlags,
-    ) -> Option<u32> {
+    pub fn create_buffer<T>(&mut self, buffer_type: Vec<T>) -> Result<Buffer, ()> {
+        let instance = self.instance.as_ref().unwrap();
+        let physical_device = self.physical_device.unwrap();
+        let device = self.logical_device.as_ref().unwrap();
+        let buffer_size = (size_of::<T>() * buffer_type.len()) as u64;
+        let mut staging_memory = DeviceMemory::default();
+        let mut vertex_buffer_memory = DeviceMemory::default();
+        let staging_buffer = Self::allocate_buffer(
+            &instance,
+            physical_device,
+            device,
+            buffer_size as u64,
+            BufferUsageFlags::TRANSFER_SRC,
+            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+            &mut staging_memory,
+        );
         unsafe {
-            let memory_properties = instance.get_physical_device_memory_properties(physical_device);
-            let memory_types = memory_properties.memory_types.to_vec();
-            for i in 0..memory_properties.memory_type_count {
-                if (type_filter.eq(&(1 << i)))
-                    && memory_types[i as usize].property_flags.eq(&properties)
-                {
-                    return Some(i);
-                }
-            }
-        }
-        None
-    }
-
-    pub fn create_vertex_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        unsafe {
-            let instance = self.instance.unwrap();
-            let physical_device = self.physical_device.unwrap();
-            let device = self.logical_device.as_ref().unwrap();
-            let buffer_size = (size_of::<Vertex>() * self.vertices.len()) as u64;
-            let staging_memory = DeviceMemory::default();
-            let buffer_memory = DeviceMemory::default();
-            let staging_buffer = Self::create_buffer(
-                &instance,
-                physical_device,
-                device,
-                buffer_size as u64,
-                BufferUsageFlags::TRANSFER_SRC,
-                MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-                &staging_memory,
-            );
-
             let data = device
                 .map_memory(staging_memory, 0, buffer_size, MemoryMapFlags::empty())
                 .unwrap();
-            self.vertices
+            buffer_type
                 .as_ptr()
                 .copy_to_nonoverlapping(data.cast(), buffer_size as usize);
-            device.unmap_memory(staging_memory);
 
-            let vertex_buffer = Self::create_buffer(
+            device.unmap_memory(staging_memory);
+            let buffer = Self::allocate_buffer(
                 &instance,
                 physical_device,
                 device,
                 buffer_size as u64,
                 BufferUsageFlags::TRANSFER_DST | BufferUsageFlags::VERTEX_BUFFER,
                 MemoryPropertyFlags::DEVICE_LOCAL,
-                &buffer_memory,
+                &mut vertex_buffer_memory,
             );
 
-            self.copy_buffer(staging_buffer, vertex_buffer, buffer_size);
+            self.copy_buffer(staging_buffer, buffer, buffer_size);
 
             device.destroy_buffer(staging_buffer, None);
             device.free_memory(staging_memory, None);
+            Ok(buffer)
         }
+    }
 
+    pub fn create_vertex_buffer(&mut self) -> Result<&mut Configuration, ()> {
+        self.vertex_buffer = self.create_buffer(self.vertices.clone())?;
+        Ok(self)
+    }
+
+    pub fn create_index_buffer(&mut self) -> Result<&mut Configuration, ()> {
+        self.index_buffer = self.create_buffer(self.indices.clone())?;
         Ok(self)
     }
 
@@ -1178,10 +1194,7 @@ impl Configuration {
         let device = self.logical_device.as_ref().unwrap();
 
         unsafe {
-            let command_buffer = self
-                .logical_device
-                .as_ref()
-                .unwrap()
+            let command_buffer = device
                 .allocate_command_buffers(&command_buffer_allocate_info)
                 .unwrap();
 
@@ -1254,6 +1267,9 @@ impl Configuration {
 
             vertices: self.vertices.clone(),
             vertex_buffer: self.vertex_buffer.clone(),
+            indices: self.indices.clone(),
+            index_buffer: self.index_buffer.clone(),
+
             width: self.width,
             height: self.height,
 

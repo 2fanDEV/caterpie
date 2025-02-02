@@ -29,6 +29,7 @@ impl Engine {
             .create_framebuffers().unwrap()
             .create_command_pool().unwrap()
             .create_vertex_buffer().unwrap()
+            .create_index_buffer().unwrap()
             .create_command_buffer().unwrap()
             .create_sync_objects().unwrap()
             .build();
