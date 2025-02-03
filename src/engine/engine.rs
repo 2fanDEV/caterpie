@@ -25,6 +25,7 @@ impl Engine {
             .create_swap_chain().unwrap()
             .create_swapchain_image_views().unwrap()
             .create_render_pass().unwrap()
+            .create_descriptor_set_layout().unwrap()
             .create_graphics_pipeline().unwrap()
             .create_framebuffers().unwrap()
             .create_command_pool().unwrap()

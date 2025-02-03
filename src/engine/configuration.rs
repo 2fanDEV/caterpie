@@ -5,12 +5,7 @@ use std::{
 };
 
 use ash::vk::{
-    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue,
-    ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DeviceMemory, DeviceSize, Fence,
-    FenceCreateFlags, FenceCreateInfo, IndexType, MemoryAllocateInfo, MemoryMapFlags,
-    MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineStageFlags,
-    RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo,
-    SubpassContents, SubpassDependency, SUBPASS_EXTERNAL,
+    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue, ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory, DeviceSize, Fence, FenceCreateFlags, FenceCreateInfo, IndexType, MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineStageFlags, RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo, SubpassContents, SubpassDependency, SUBPASS_EXTERNAL
 };
 use ash::{
     util::read_spv,
@@ -90,6 +85,8 @@ pub struct Configuration {
     pub image_available_semaphores: Vec<Semaphore>,
     pub render_finished_semaphores: Vec<Semaphore>,
     pub in_flight_fences: Vec<Fence>,
+
+    descriptor_set_layout : Option<DescriptorSetLayout>,
 
     pub vertices: Vec<Vertex>,
     pub vertex_buffer: Buffer,
@@ -1229,6 +1226,36 @@ impl Configuration {
         self.height = size.height;
     }
 
+    pub fn create_descriptor_set_layout(&mut self) -> Result<&mut Configuration, ()>  {
+        
+        unsafe {
+
+        let bindings = vec![DescriptorSetLayoutBinding::default().binding(0)
+            .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(ShaderStageFlags::VERTEX)];
+        
+        let descriptor_set_create_info = DescriptorSetLayoutCreateInfo::default()
+            .bindings(&bindings);
+
+        match self.logical_device.as_ref().unwrap()
+            .create_descriptor_set_layout(&descriptor_set_create_info, None) {
+                Ok(d) => {
+                    self.descriptor_set_layout = Some(d);
+                },
+                Err(e) => {
+                    error!("{:?}", e);
+                },
+            }
+
+            }
+
+
+
+
+        Ok(self)
+    }
+
     pub fn build(&mut self) -> Configuration {
         Configuration {
             vulkan_entry: self.vulkan_entry.clone(),
@@ -1265,11 +1292,13 @@ impl Configuration {
             render_finished_semaphores: self.render_finished_semaphores.clone(),
             in_flight_fences: self.in_flight_fences.clone(),
 
+            descriptor_set_layout: self.descriptor_set_layout,
+
             vertices: self.vertices.clone(),
             vertex_buffer: self.vertex_buffer.clone(),
             indices: self.indices.clone(),
             index_buffer: self.index_buffer.clone(),
-
+            
             width: self.width,
             height: self.height,
 
