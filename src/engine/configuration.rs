@@ -5,7 +5,13 @@ use std::{
 };
 
 use ash::vk::{
-    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue, ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory, DeviceSize, Fence, FenceCreateFlags, FenceCreateInfo, IndexType, MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineStageFlags, RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo, SubpassContents, SubpassDependency, SUBPASS_EXTERNAL
+    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue,
+    ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DescriptorSetLayout,
+    DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory,
+    DeviceSize, Fence, FenceCreateFlags, FenceCreateInfo, IndexType, MemoryAllocateInfo,
+    MemoryMapFlags, MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineStageFlags,
+    RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo,
+    SubpassContents, SubpassDependency, SUBPASS_EXTERNAL,
 };
 use ash::{
     util::read_spv,
@@ -43,6 +49,7 @@ use winit::{
     window::Window,
 };
 
+use crate::engine::uniform_buffer_object::*;
 use crate::engine::vertex::*;
 
 use crate::utils;
@@ -86,12 +93,18 @@ pub struct Configuration {
     pub render_finished_semaphores: Vec<Semaphore>,
     pub in_flight_fences: Vec<Fence>,
 
-    descriptor_set_layout : Option<DescriptorSetLayout>,
+    descriptor_set_layout: Option<DescriptorSetLayout>,
 
-    pub vertices: Vec<Vertex>,
-    pub vertex_buffer: Buffer,
+    vertices: Vec<Vertex>,
+    vertex_buffer: Buffer,
+    vertex_buffer_memory: DeviceMemory,
+
+    uniform_buffers: Vec<Buffer>,
+    uniform_buffer_memory: Vec<DeviceMemory>,
+
     indices: Vec<u16>,
     index_buffer: Buffer,
+    index_buffer_memory: DeviceMemory,
     width: u32,
     height: u32,
 
@@ -261,9 +274,12 @@ impl Configuration {
             vulkan_entry: None,
             vertices: Vec::new(),
             indices: Vec::new(),
+            uniform_buffers: Vec::new(),
+            uniform_buffer_memory: Vec::new(),
             ..Default::default()
         };
     }
+
     pub fn create_instance(&mut self, window: &Window) -> Result<&mut Configuration, &str> {
         unsafe {
             self.vulkan_entry = Some(
@@ -1129,13 +1145,13 @@ impl Configuration {
         }
     }
 
-    pub fn create_buffer<T>(&mut self, buffer_type: Vec<T>) -> Result<Buffer, ()> {
+    pub fn create_buffer<T>(&mut self, buffer_type: Vec<T>) -> Result<(Buffer, DeviceMemory), ()> {
         let instance = self.instance.as_ref().unwrap();
         let physical_device = self.physical_device.unwrap();
         let device = self.logical_device.as_ref().unwrap();
         let buffer_size = (size_of::<T>() * buffer_type.len()) as u64;
         let mut staging_memory = DeviceMemory::default();
-        let mut vertex_buffer_memory = DeviceMemory::default();
+        let mut buffer_memory = DeviceMemory::default();
         let staging_buffer = Self::allocate_buffer(
             &instance,
             physical_device,
@@ -1161,24 +1177,31 @@ impl Configuration {
                 buffer_size as u64,
                 BufferUsageFlags::TRANSFER_DST | BufferUsageFlags::VERTEX_BUFFER,
                 MemoryPropertyFlags::DEVICE_LOCAL,
-                &mut vertex_buffer_memory,
+                &mut buffer_memory,
             );
 
             self.copy_buffer(staging_buffer, buffer, buffer_size);
 
             device.destroy_buffer(staging_buffer, None);
             device.free_memory(staging_memory, None);
-            Ok(buffer)
+            Ok((buffer, buffer_memory))
         }
     }
 
     pub fn create_vertex_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        self.vertex_buffer = self.create_buffer(self.vertices.clone())?;
+        (self.vertex_buffer, self.vertex_buffer_memory) = self.create_buffer(self.vertices.clone())?;
         Ok(self)
     }
 
     pub fn create_index_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        self.index_buffer = self.create_buffer(self.indices.clone())?;
+        (self.index_buffer, self.index_buffer_memory) = self.create_buffer(self.indices.clone())?;
+        Ok(self)
+    }
+
+    pub fn create_uniform_buffer(&mut self) -> Result<&mut Configuration, ()> {
+        let buffer_size = size_of::<UniformBufferObject>();
+        let uniform_buffer_memory = DeviceMemory::default();
+
         Ok(self)
     }
 
@@ -1226,32 +1249,31 @@ impl Configuration {
         self.height = size.height;
     }
 
-    pub fn create_descriptor_set_layout(&mut self) -> Result<&mut Configuration, ()>  {
-        
+    pub fn create_descriptor_set_layout(&mut self) -> Result<&mut Configuration, ()> {
         unsafe {
+            let bindings = vec![DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(ShaderStageFlags::VERTEX)];
 
-        let bindings = vec![DescriptorSetLayoutBinding::default().binding(0)
-            .descriptor_type(DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(ShaderStageFlags::VERTEX)];
-        
-        let descriptor_set_create_info = DescriptorSetLayoutCreateInfo::default()
-            .bindings(&bindings);
+            let descriptor_set_create_info =
+                DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
 
-        match self.logical_device.as_ref().unwrap()
-            .create_descriptor_set_layout(&descriptor_set_create_info, None) {
+            match self
+                .logical_device
+                .as_ref()
+                .unwrap()
+                .create_descriptor_set_layout(&descriptor_set_create_info, None)
+            {
                 Ok(d) => {
                     self.descriptor_set_layout = Some(d);
-                },
+                }
                 Err(e) => {
                     error!("{:?}", e);
-                },
+                }
             }
-
-            }
-
-
-
+        }
 
         Ok(self)
     }
@@ -1296,9 +1318,14 @@ impl Configuration {
 
             vertices: self.vertices.clone(),
             vertex_buffer: self.vertex_buffer.clone(),
+            vertex_buffer_memory: self.vertex_buffer_memory,
+
             indices: self.indices.clone(),
             index_buffer: self.index_buffer.clone(),
+            index_buffer_memory: self.index_buffer_memory,
             
+            uniform_buffers: self.uniform_buffers.clone(),
+            uniform_buffer_memory: self.uniform_buffer_memory.clone(),
             width: self.width,
             height: self.height,
 
