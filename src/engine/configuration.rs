@@ -99,7 +99,7 @@ pub struct Configuration {
     vertex_buffer: Buffer,
     vertex_buffer_memory: DeviceMemory,
 
-    uniform_buffers: Vec<Buffer>,
+    uniform_buffers: Vec<UniformBufferObject>,
     uniform_buffer_memory: Vec<DeviceMemory>,
 
     indices: Vec<u16>,
@@ -1145,10 +1145,7 @@ impl Configuration {
         }
     }
 
-    pub fn create_buffer<T>(&mut self, buffer_type: Vec<T>) -> Result<(Buffer, DeviceMemory), ()> {
-        let instance = self.instance.as_ref().unwrap();
-        let physical_device = self.physical_device.unwrap();
-        let device = self.logical_device.as_ref().unwrap();
+    pub fn create_buffer<T>(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, buffer_type: &Vec<T>) -> Result<(Buffer, DeviceMemory), ()> {
         let buffer_size = (size_of::<T>() * buffer_type.len()) as u64;
         let mut staging_memory = DeviceMemory::default();
         let mut buffer_memory = DeviceMemory::default();
@@ -1172,7 +1169,7 @@ impl Configuration {
             device.unmap_memory(staging_memory);
             let buffer = Self::allocate_buffer(
                 &instance,
-                physical_device,
+                *physical_device,
                 device,
                 buffer_size as u64,
                 BufferUsageFlags::TRANSFER_DST | BufferUsageFlags::VERTEX_BUFFER,
@@ -1180,7 +1177,7 @@ impl Configuration {
                 &mut buffer_memory,
             );
 
-            self.copy_buffer(staging_buffer, buffer, buffer_size);
+            Self::copy_buffer(device,staging_buffer, buffer, buffer_size);
 
             device.destroy_buffer(staging_buffer, None);
             device.free_memory(staging_memory, None);
@@ -1189,29 +1186,41 @@ impl Configuration {
     }
 
     pub fn create_vertex_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        (self.vertex_buffer, self.vertex_buffer_memory) = self.create_buffer(self.vertices.clone())?;
+        (self.vertex_buffer, self.vertex_buffer_memory) = Self::create_buffer(self.instance.as_ref().unwrap(),
+        self.physical_device.as_ref().unwrap(),
+        self.logical_device.as_ref().unwrap(),
+        &self.vertices).unwrap();
         Ok(self)
     }
 
     pub fn create_index_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        (self.index_buffer, self.index_buffer_memory) = self.create_buffer(self.indices.clone())?;
+        let indices = &self.indices;
+        (self.index_buffer, self.index_buffer_memory) = Self::create_buffer(self.instance.as_ref().unwrap(),
+        self.physical_device.as_ref().unwrap(),
+        self.logical_device.as_ref().unwrap(),
+        &self.indices).unwrap();
         Ok(self)
     }
 
     pub fn create_uniform_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        let buffer_size = size_of::<UniformBufferObject>();
-        let uniform_buffer_memory = DeviceMemory::default();
+        let uniform_buffers = &self.uniform_buffers;
+        for i in 0..MAX_FLIGHT_FENCES {
+            let (uniform_buffer, uniform_buffer_memory) = Self::create_buffer(
+                self.instance.as_ref().unwrap(),
+                self.physical_device.as_ref().unwrap(),
+                self.logical_device.as_ref().unwrap(),
+                &uniform_buffers
+            ).unwrap();
+        }
 
         Ok(self)
     }
 
-    fn copy_buffer(&self, src_buffer: Buffer, dst_buffer: Buffer, size: DeviceSize) {
+    fn copy_buffer(device: &Device, src_buffer: Buffer, dst_buffer: Buffer, size: DeviceSize) {
         let command_buffer_allocate_info = CommandBufferAllocateInfo::default()
             .level(CommandBufferLevel::PRIMARY)
             .command_pool(self.command_pool.unwrap())
             .command_buffer_count(1);
-
-        let device = self.logical_device.as_ref().unwrap();
 
         unsafe {
             let command_buffer = device
