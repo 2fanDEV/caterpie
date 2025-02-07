@@ -1,10 +1,10 @@
 use cgmath::Matrix4;
 
-#[derive(Debug, Clone)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct UniformBufferObject {
-    model: Matrix4<f32>,
-    view: Matrix4<f32>,
-    projection: Matrix4<f32>
+    pub model: Matrix4<f32>,
+    pub view: Matrix4<f32>,
+    pub projection: Matrix4<f32>,
 }
-
 

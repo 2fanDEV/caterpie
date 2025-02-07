@@ -5,13 +5,7 @@ use std::{
 };
 
 use ash::vk::{
-    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue,
-    ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DescriptorSetLayout,
-    DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory,
-    DeviceSize, Fence, FenceCreateFlags, FenceCreateInfo, IndexType, MemoryAllocateInfo,
-    MemoryMapFlags, MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineStageFlags,
-    RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo,
-    SubpassContents, SubpassDependency, SUBPASS_EXTERNAL,
+    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue, ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DescriptorPoolSize, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory, DeviceSize, Fence, FenceCreateFlags, FenceCreateInfo, IndexType, MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineStageFlags, RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo, SubpassContents, SubpassDependency, SUBPASS_EXTERNAL
 };
 use ash::{
     util::read_spv,
@@ -49,7 +43,6 @@ use winit::{
     window::Window,
 };
 
-use crate::engine::uniform_buffer_object::*;
 use crate::engine::vertex::*;
 
 use crate::utils;
@@ -72,7 +65,7 @@ pub struct Configuration {
     pub surface: Option<SurfaceKHR>,
     surface_format: Option<SurfaceFormatKHR>,
     present_mode: Option<PresentModeKHR>,
-    extent: Option<Extent2D>,
+    pub extent: Option<Extent2D>,
     image_count: u32,
     swapchain_support_details: Option<SwapchainSupportDetails>,
     pub swapchain_device: Option<ash::khr::swapchain::Device>,
@@ -99,8 +92,8 @@ pub struct Configuration {
     vertex_buffer: Buffer,
     vertex_buffer_memory: DeviceMemory,
 
-    uniform_buffers: Vec<UniformBufferObject>,
-    uniform_buffer_memory: Vec<DeviceMemory>,
+    pub uniform_buffers: Vec<Buffer>,
+    pub uniform_buffer_memory: Vec<DeviceMemory>,
 
     indices: Vec<u16>,
     index_buffer: Buffer,
@@ -1145,13 +1138,20 @@ impl Configuration {
         }
     }
 
-    pub fn create_buffer<T>(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, buffer_type: &Vec<T>) -> Result<(Buffer, DeviceMemory), ()> {
+    pub fn create_buffer<T>(
+        instance: &Instance,
+        physical_device: &PhysicalDevice,
+        device: &Device,
+        buffer_type: &Vec<T>,
+        command_pool: &CommandPool,
+        queue: &Queue,
+    ) -> Result<(Buffer, DeviceMemory), ()> {
         let buffer_size = (size_of::<T>() * buffer_type.len()) as u64;
         let mut staging_memory = DeviceMemory::default();
         let mut buffer_memory = DeviceMemory::default();
         let staging_buffer = Self::allocate_buffer(
             &instance,
-            physical_device,
+            *physical_device,
             device,
             buffer_size as u64,
             BufferUsageFlags::TRANSFER_SRC,
@@ -1177,7 +1177,14 @@ impl Configuration {
                 &mut buffer_memory,
             );
 
-            Self::copy_buffer(device,staging_buffer, buffer, buffer_size);
+            Self::copy_buffer(
+                device,
+                staging_buffer,
+                buffer,
+                buffer_size,
+                &command_pool,
+                &queue,
+            );
 
             device.destroy_buffer(staging_buffer, None);
             device.free_memory(staging_memory, None);
@@ -1186,40 +1193,62 @@ impl Configuration {
     }
 
     pub fn create_vertex_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        (self.vertex_buffer, self.vertex_buffer_memory) = Self::create_buffer(self.instance.as_ref().unwrap(),
-        self.physical_device.as_ref().unwrap(),
-        self.logical_device.as_ref().unwrap(),
-        &self.vertices).unwrap();
+        (self.vertex_buffer, self.vertex_buffer_memory) = Self::create_buffer(
+            self.instance.as_ref().unwrap(),
+            self.physical_device.as_ref().unwrap(),
+            self.logical_device.as_ref().unwrap(),
+            &self.vertices,
+            self.command_pool.as_ref().unwrap(),
+            self.graphics_queue.as_ref().unwrap(),
+        )
+        .unwrap();
         Ok(self)
     }
 
     pub fn create_index_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        let indices = &self.indices;
-        (self.index_buffer, self.index_buffer_memory) = Self::create_buffer(self.instance.as_ref().unwrap(),
-        self.physical_device.as_ref().unwrap(),
-        self.logical_device.as_ref().unwrap(),
-        &self.indices).unwrap();
+        (self.index_buffer, self.index_buffer_memory) = Self::create_buffer(
+            self.instance.as_ref().unwrap(),
+            self.physical_device.as_ref().unwrap(),
+            self.logical_device.as_ref().unwrap(),
+            &self.indices,
+            self.command_pool.as_ref().unwrap(),
+            self.graphics_queue.as_ref().unwrap(),
+        )
+        .unwrap();
         Ok(self)
     }
 
     pub fn create_uniform_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        let uniform_buffers = &self.uniform_buffers;
-        for i in 0..MAX_FLIGHT_FENCES {
+        let device = self.logical_device.as_ref().unwrap();
+        for _i in 0..MAX_FLIGHT_FENCES {
             let (uniform_buffer, uniform_buffer_memory) = Self::create_buffer(
                 self.instance.as_ref().unwrap(),
                 self.physical_device.as_ref().unwrap(),
-                self.logical_device.as_ref().unwrap(),
-                &uniform_buffers
-            ).unwrap();
+                device,
+                self.uniform_buffers.as_ref(),
+                self.command_pool.as_ref().unwrap(),
+                self.graphics_queue.as_ref().unwrap(),
+            )
+            .unwrap();
+
+            self.uniform_buffers.push(uniform_buffer);
+            self.uniform_buffer_memory.push(uniform_buffer_memory);
         }
 
         Ok(self)
     }
 
-    fn copy_buffer(device: &Device, src_buffer: Buffer, dst_buffer: Buffer, size: DeviceSize) {
+    fn copy_buffer(
+        device: &Device,
+        src_buffer: Buffer,
+        dst_buffer: Buffer,
+        size: DeviceSize,
+        command_pool: &CommandPool,
+        queue: &Queue,
+    ) {
         let command_buffer_allocate_info = CommandBufferAllocateInfo::default()
             .level(CommandBufferLevel::PRIMARY)
-            .command_pool(self.command_pool.unwrap())
+            .command_pool(*command_pool)
             .command_buffer_count(1);
 
         unsafe {
@@ -1230,9 +1259,7 @@ impl Configuration {
             let begin_info =
                 CommandBufferBeginInfo::default().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
-            self.logical_device
-                .as_ref()
-                .unwrap()
+            device
                 .begin_command_buffer(command_buffer[0], &begin_info)
                 .unwrap();
             let buffer_copy = vec![BufferCopy::default().src_offset(0).dst_offset(0).size(size)];
@@ -1243,12 +1270,10 @@ impl Configuration {
 
             let submit_info = &[SubmitInfo::default().command_buffers(&command_buffer)];
             device
-                .queue_submit(self.graphics_queue.unwrap(), submit_info, Fence::null())
+                .queue_submit(*queue, submit_info, Fence::null())
                 .unwrap();
-            device
-                .queue_wait_idle(self.graphics_queue.unwrap())
-                .unwrap();
-            device.free_command_buffers(self.command_pool.unwrap(), &command_buffer);
+            device.queue_wait_idle(*queue).unwrap();
+            device.free_command_buffers(*command_pool, &command_buffer);
         };
     }
 
@@ -1286,6 +1311,14 @@ impl Configuration {
 
         Ok(self)
     }
+
+    pub fn create_descriptor_pool(&mut self) -> Result<&mut Configuration, ()> { 
+        let ubo_size = DescriptorPoolSize::default()
+            .ty(DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(self.swapchain_images.len() as u32);
+        Ok(self)
+    }
+    
 
     pub fn build(&mut self) -> Configuration {
         Configuration {
@@ -1332,7 +1365,7 @@ impl Configuration {
             indices: self.indices.clone(),
             index_buffer: self.index_buffer.clone(),
             index_buffer_memory: self.index_buffer_memory,
-            
+
             uniform_buffers: self.uniform_buffers.clone(),
             uniform_buffer_memory: self.uniform_buffer_memory.clone(),
             width: self.width,

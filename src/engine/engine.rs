@@ -1,47 +1,119 @@
 use std::ops::Add;
+use std::time::Instant;
 
-use ash::vk::{CommandBufferResetFlags, PipelineStageFlags, PresentInfoKHR, SubmitInfo};
+use ash::vk::{
+    CommandBufferResetFlags, MemoryMapFlags, PipelineStageFlags, PresentInfoKHR, SubmitInfo,
+};
+use cgmath::{perspective, point3, vec2, vec3, Deg, Matrix, Matrix4};
 use log::warn;
 use log::{error, info};
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-use crate::engine::configuration::MAX_FLIGHT_FENCES;
 use crate::engine::configuration::Configuration;
+use crate::engine::configuration::MAX_FLIGHT_FENCES;
+
+use super::configuration;
+use super::uniform_buffer_object::UniformBufferObject;
+use super::vertex::Vertex;
 
 #[derive(Default)]
 pub struct Engine {
     configuration: Configuration,
-    frame: u32
+    start: Option<Instant>,
+    frame: u32,
 }
 
 impl Engine {
     pub fn init(window: &Window) -> Result<Engine, &str> {
         let configuration = Configuration::default()
-            .create_instance(window).unwrap()
-            .create_surface(window).unwrap()
-            .pick_physical_device().unwrap()
-            .create_logical_device().unwrap()
-            .create_swap_chain().unwrap()
-            .create_swapchain_image_views().unwrap()
-            .create_render_pass().unwrap()
-            .create_descriptor_set_layout().unwrap()
-            .create_graphics_pipeline().unwrap()
-            .create_framebuffers().unwrap()
-            .create_command_pool().unwrap()
-            .create_vertex_buffer().unwrap()
-            .create_index_buffer().unwrap()
-            .create_command_buffer().unwrap()
-            .create_sync_objects().unwrap()
+            .create_instance(window)
+            .unwrap()
+            .create_surface(window)
+            .unwrap()
+            .pick_physical_device()
+            .unwrap()
+            .create_logical_device()
+            .unwrap()
+            .create_swap_chain()
+            .unwrap()
+            .create_swapchain_image_views()
+            .unwrap()
+            .create_render_pass()
+            .unwrap()
+            .create_descriptor_set_layout()
+            .unwrap()
+            .create_graphics_pipeline()
+            .unwrap()
+            .create_framebuffers()
+            .unwrap()
+            .create_command_pool()
+            .unwrap()
+            .create_vertex_buffer()
+            .unwrap()
+            .create_index_buffer()
+            .unwrap()
+            .create_uniform_buffer()
+            .unwrap()
+            .create_command_buffer()
+            .unwrap()
+            .create_sync_objects()
+            .unwrap()
             .build();
         Ok(Self {
             configuration,
+            start: Some(Instant::now()),
             frame: 0,
         })
     }
 
     pub fn window_resized(&mut self, size: PhysicalSize<u32>) {
         self.configuration.window_resized(size);
+    }
+
+    fn update_uniform_buffer(&mut self, current_image: usize) {
+        let start_time = self.start.unwrap();
+        let current_time = Instant::now();
+        let time_elapsed = current_time - start_time;
+
+        let device = self.configuration.logical_device.as_ref()
+            .unwrap();
+
+        let model = Matrix4::from_axis_angle(vec3(0.0, 0.0, 1.0), Deg(90.0) * time_elapsed.as_secs_f32());
+
+        let view = Matrix4::look_at_rh(
+            point3(2.0, 2.0, 2.0),
+            point3(0.0, 0.0, 0.0),
+            vec3(0.0, 0.0, 1.0),
+        );
+
+        let mut proj = perspective(
+            Deg(45.0),
+            self.configuration.extent.unwrap().width as f32
+                / self.configuration.extent.unwrap().height as f32,
+            0.1,
+            10.0,
+        );
+
+        proj[1][1] *= -1.0;
+
+        let ubo = UniformBufferObject {
+            model,
+            view,
+            projection: proj,
+        };
+        unsafe {
+        let memory = device
+                .map_memory(
+                    self.configuration.uniform_buffer_memory[current_image],
+                    0,
+                    size_of::<UniformBufferObject>() as u64,
+                    MemoryMapFlags::empty(),
+                ).unwrap();  
+        std::ptr::copy_nonoverlapping(&ubo, memory.cast(), 1);
+        
+        };
+    
     }
 
     pub fn draw_frame(&mut self) {
@@ -59,12 +131,16 @@ impl Engine {
                 }
             }
 
-            let next_image_query_result = configuration.swapchain_device.as_ref().unwrap().acquire_next_image(
-                configuration.swapchain.unwrap(),
-                u64::MAX,
-                configuration.image_available_semaphores[current_frame],
-                fences[current_frame],
-            );
+            let next_image_query_result = configuration
+                .swapchain_device
+                .as_ref()
+                .unwrap()
+                .acquire_next_image(
+                    configuration.swapchain.unwrap(),
+                    u64::MAX,
+                    configuration.image_available_semaphores[current_frame],
+                    fences[current_frame],
+                );
 
             let mut next_image_index: u32 = 0;
 
@@ -74,7 +150,7 @@ impl Engine {
                 }
                 Err(_) => {
                     configuration.recreate_swapchain();
-                    return
+                    return;
                 }
             }
 
@@ -88,10 +164,8 @@ impl Engine {
 
             configuration.record_command_buffer(&command_buffer, next_image_index);
 
-            let wait_semaphores =
-                vec![configuration.image_available_semaphores[current_frame]];
-            let signal_semaphores =
-                vec![configuration.render_finished_semaphores[current_frame]];
+            let wait_semaphores = vec![configuration.image_available_semaphores[current_frame]];
+            let signal_semaphores = vec![configuration.render_finished_semaphores[current_frame]];
             let command_buffer = vec![configuration.command_buffer[current_frame]];
             let wait_stages = vec![PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
             let swapchains = vec![configuration.swapchain.unwrap()];
@@ -119,7 +193,10 @@ impl Engine {
                 .swapchain_device
                 .as_ref()
                 .unwrap()
-                .queue_present(self.configuration.presentation_queue.unwrap(), &present_info)
+                .queue_present(
+                    self.configuration.presentation_queue.unwrap(),
+                    &present_info,
+                )
                 .unwrap();
 
             if self.configuration.window_resized {
