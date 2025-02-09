@@ -1,19 +1,43 @@
+use core::time;
+use std::{os::unix::thread, thread::sleep};
+
 use log::debug;
-use winit::{application::ApplicationHandler, dpi::{LogicalSize, PhysicalSize, Size}, event::{self, KeyEvent}, window::{self, Window, WindowAttributes}};
+use winit::application::ApplicationHandler;
+use winit::{
+    dpi::PhysicalSize,
+    event::{self, KeyEvent},
+    window::{Window, WindowAttributes},
+};
 
 use crate::engine::engine::Engine;
 
 #[derive(Default)]
-pub struct App{
+pub struct App {
+    request_redraw: bool,
     window: Option<Window>,
     engine: Option<Engine>,
 }
 
+const POLL_SLEEP_TIME: std::time::Duration = time::Duration::from_millis(10);
+
 impl ApplicationHandler for App {
+    fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        self.window.as_ref().unwrap().request_redraw();
+        match event_loop.control_flow() {
+            winit::event_loop::ControlFlow::Poll => {
+                sleep(POLL_SLEEP_TIME);
+            }
+            _ => todo!(),
+        }
+    }
+
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let window_attributes = WindowAttributes::default().with_inner_size(PhysicalSize::new(1920, 1080));
+        let window_attributes = WindowAttributes::default()
+            .with_inner_size(PhysicalSize::new(1920, 1080))
+            .with_decorations(false);
         self.window = Some(event_loop.create_window(window_attributes).unwrap());
         self.engine = Some(Engine::init(&self.window.as_ref().unwrap()).unwrap());
+        debug!("App resumed");
     }
 
     fn window_event(
@@ -28,23 +52,26 @@ impl ApplicationHandler for App {
                 match event {
                     event::WindowEvent::Resized(size) => {
                         engine.window_resized(size);
-
-                    },
-                    event::WindowEvent::KeyboardInput { device_id, event, is_synthetic } => {
-                       match event {
-                        KeyEvent { physical_key, logical_key, text, location, state, repeat, .. } => {
-                            if logical_key.eq("e") {
-                            }
-                        }
-                       } 
                     }
+                    event::WindowEvent::KeyboardInput {
+                        device_id,
+                        event,
+                        is_synthetic,
+                    } => match event {
+                        KeyEvent {
+                            physical_key,
+                            logical_key,
+                            text,
+                            location,
+                            state,
+                            repeat,
+                            ..
+                        } => if logical_key.eq("e") {},
+                    },
                     _ => {}
                 }
-            },
-            None => {},
+            }
+            None => {}
         }
     }
 }
-
-
-

@@ -5,7 +5,15 @@ use std::{
 };
 
 use ash::vk::{
-    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue, ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DescriptorPoolSize, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory, DeviceSize, Fence, FenceCreateFlags, FenceCreateInfo, IndexType, MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineStageFlags, RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo, SubpassContents, SubpassDependency, SUBPASS_EXTERNAL
+    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue,
+    ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, CopyDescriptorSet,
+    DescriptorBufferInfo, DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
+    DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
+    DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory, DeviceSize, Fence,
+    FenceCreateFlags, FenceCreateInfo, IndexType, MemoryAllocateInfo, MemoryMapFlags,
+    MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineStageFlags,
+    RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo,
+    SubpassContents, SubpassDependency, WriteDescriptorSet, SUBPASS_EXTERNAL,
 };
 use ash::{
     util::read_spv,
@@ -35,7 +43,7 @@ use ash::{
     },
     Device, Entry, Instance,
 };
-use cgmath::{vec2, vec3};
+use cgmath::{vec2, vec3, Matrix4, Zero};
 use log::*;
 use winit::{
     dpi::PhysicalSize,
@@ -43,11 +51,11 @@ use winit::{
     window::Window,
 };
 
-use crate::engine::vertex::*;
-
 use crate::utils;
 
-pub const MAX_FLIGHT_FENCES: u32 = 2;
+mod textures;
+mod buffer_types;
+pub const MAX_FLIGHT_FENCES: u32 = 3;
 
 #[allow(clippy::pedantic)]
 #[derive(Default, Clone)]
@@ -57,7 +65,7 @@ pub struct Configuration {
     physical_device: Option<PhysicalDevice>,
     physical_device_features: Option<PhysicalDeviceFeatures>,
     queue_family_indices: Option<QueueFamilyIndices>,
-    pub logical_device: Option<Device>,
+    pub device: Option<Device>,
     pub graphics_queue: Option<Queue>,
     pub presentation_queue: Option<Queue>,
     device_extensions: Vec<*const i8>,
@@ -76,6 +84,7 @@ pub struct Configuration {
     scissors: Vec<Rect2D>,
 
     render_pass: Option<RenderPass>,
+    pipeline_layout: PipelineLayout,
     graphics_pipelines: Vec<Pipeline>,
 
     pub framebuffers: Vec<Framebuffer>,
@@ -85,8 +94,6 @@ pub struct Configuration {
     pub image_available_semaphores: Vec<Semaphore>,
     pub render_finished_semaphores: Vec<Semaphore>,
     pub in_flight_fences: Vec<Fence>,
-
-    descriptor_set_layout: Option<DescriptorSetLayout>,
 
     vertices: Vec<Vertex>,
     vertex_buffer: Buffer,
@@ -100,6 +107,10 @@ pub struct Configuration {
     index_buffer_memory: DeviceMemory,
     width: u32,
     height: u32,
+
+    descriptor_pool: DescriptorPool,
+    descriptor_set_layout: Vec<DescriptorSetLayout>,
+    descriptor_sets: Vec<DescriptorSet>,
 
     pub window_resized: bool,
 
@@ -258,7 +269,7 @@ impl Configuration {
             viewports: Vec::new(),
             image_views: Vec::new(),
             swapchain_images: Vec::new(),
-            logical_device: None,
+            device: None,
             swapchain_device: None,
             swapchain_support_details: None,
             surface_instance: None,
@@ -269,6 +280,8 @@ impl Configuration {
             indices: Vec::new(),
             uniform_buffers: Vec::new(),
             uniform_buffer_memory: Vec::new(),
+            descriptor_sets: Vec::new(),
+            descriptor_set_layout: Vec::new(),
             ..Default::default()
         };
     }
@@ -479,7 +492,7 @@ impl Configuration {
         Err("Validation Layers are not present on this machine")
     }
 
-    pub fn create_logical_device(&mut self) -> Result<&mut Configuration, &str> {
+    pub fn create_device(&mut self) -> Result<&mut Configuration, &str> {
         let instance = self.instance.as_ref().unwrap();
         self.queue_family_indices = QueueFamilyIndices::find_queue_family_indices(
             instance.clone(),
@@ -512,7 +525,7 @@ impl Configuration {
                 .queue_create_infos(&device_queue_create_infos)
                 .enabled_features(self.physical_device_features.as_ref().unwrap())
                 .enabled_extension_names(&self.device_extensions);
-            self.logical_device = Some(
+            self.device = Some(
                 instance
                     .create_device(self.physical_device.unwrap(), &device_create_info, None)
                     .unwrap(),
@@ -529,7 +542,7 @@ impl Configuration {
     pub fn find_device_queue(&mut self, queue_family_index: u32) -> Option<Queue> {
         unsafe {
             Some(
-                self.logical_device
+                self.device
                     .as_ref()
                     .unwrap()
                     .get_device_queue(queue_family_index, 0),
@@ -611,7 +624,7 @@ impl Configuration {
 
         self.swapchain_device = Some(ash::khr::swapchain::Device::new(
             self.instance.as_ref().unwrap(),
-            self.logical_device.as_ref().unwrap(),
+            self.device.as_ref().unwrap(),
         ));
 
         if queue_families[0] != queue_families[1] {
@@ -644,7 +657,7 @@ impl Configuration {
     }
 
     pub fn create_swapchain_image_views(&mut self) -> Result<&mut Configuration, &str> {
-        let device = self.logical_device.as_ref().unwrap();
+        let device = self.device.as_ref().unwrap();
         let component_mapping = ComponentMapping::default()
             .r(ComponentSwizzle::IDENTITY)
             .g(ComponentSwizzle::IDENTITY)
@@ -682,7 +695,7 @@ impl Configuration {
         &mut self,
         path: P,
     ) -> Result<ShaderModule, &str> {
-        let device = self.logical_device.as_ref().unwrap();
+        let device = self.device.as_ref().unwrap();
 
         let shader_binding = utils::io::read_file(&path).unwrap();
         let mut shader_as_byte_arr = Cursor::new(&shader_binding);
@@ -708,7 +721,7 @@ impl Configuration {
         let attachment_description = vec![AttachmentDescription::default()
             .format(self.surface_format.as_ref().unwrap().format)
             .samples(SampleCountFlags::TYPE_1)
-            .load_op(AttachmentLoadOp::LOAD)
+            .load_op(AttachmentLoadOp::CLEAR)
             .store_op(AttachmentStoreOp::STORE)
             .stencil_load_op(AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(AttachmentStoreOp::DONT_CARE)
@@ -738,7 +751,7 @@ impl Configuration {
 
         unsafe {
             self.render_pass = Some(
-                self.logical_device
+                self.device
                     .as_ref()
                     .unwrap()
                     .create_render_pass(&render_pass_create_info, None)
@@ -817,7 +830,7 @@ impl Configuration {
             .polygon_mode(PolygonMode::FILL)
             .line_width(1.0)
             .cull_mode(CullModeFlags::BACK)
-            .front_face(FrontFace::CLOCKWISE)
+            .front_face(FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false)
             .depth_bias_constant_factor(0.0)
             .depth_bias_clamp(0.0)
@@ -847,10 +860,11 @@ impl Configuration {
             .attachments(&pipeline_color_blend_attachment_state)
             .blend_constants([0.0, 0.0, 0.0, 0.0]); // OPTIONAL
 
-        let pipeline_layout_create_info = PipelineLayoutCreateInfo::default();
+        let pipeline_layout_create_info =
+            PipelineLayoutCreateInfo::default().set_layouts(&self.descriptor_set_layout);
         unsafe {
-            let pipeline_layout = self
-                .logical_device
+            self.pipeline_layout = self
+                .device
                 .as_ref()
                 .unwrap()
                 .create_pipeline_layout(&pipeline_layout_create_info, None)
@@ -868,7 +882,7 @@ impl Configuration {
                 .dynamic_state(&pipeline_dynamic_states_create_info)
                 .render_pass(self.render_pass.unwrap())
                 .base_pipeline_index(-1)
-                .layout(pipeline_layout)
+                .layout(self.pipeline_layout)
                 .base_pipeline_handle(Pipeline::null())
                 .stages(&pipeline_shader_create_infos)
                 .subpass(0)
@@ -876,7 +890,7 @@ impl Configuration {
 
             info!("Graphics Pipeline Create Info created!");
             self.graphics_pipelines = self
-                .logical_device
+                .device
                 .as_ref()
                 .unwrap()
                 .create_graphics_pipelines(
@@ -902,7 +916,7 @@ impl Configuration {
                 .layers(1);
             unsafe {
                 self.framebuffers.push(
-                    self.logical_device
+                    self.device
                         .as_ref()
                         .unwrap()
                         .create_framebuffer(&framebuffer_create_info, None)
@@ -922,7 +936,7 @@ impl Configuration {
             .flags(CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
         unsafe {
             self.command_pool = Some(
-                self.logical_device
+                self.device
                     .as_ref()
                     .unwrap()
                     .create_command_pool(&command_pool_create_info, None)
@@ -940,7 +954,7 @@ impl Configuration {
             .command_buffer_count(MAX_FLIGHT_FENCES);
 
         self.command_buffer = unsafe {
-            self.logical_device
+            self.device
                 .as_ref()
                 .unwrap()
                 .allocate_command_buffers(&command_buffer_allocate_info)
@@ -964,13 +978,13 @@ impl Configuration {
     }
 
     fn create_semaphore(&self) -> Option<Semaphore> {
-        let device = self.logical_device.as_ref().unwrap();
+        let device = self.device.as_ref().unwrap();
         let sci = SemaphoreCreateInfo::default().flags(SemaphoreCreateFlags::default());
         unsafe { Some(device.create_semaphore(&sci, None).unwrap()) }
     }
 
     fn create_fence(&self) -> Option<Fence> {
-        let device = self.logical_device.as_ref().unwrap();
+        let device = self.device.as_ref().unwrap();
         let fci = FenceCreateInfo::default().flags(FenceCreateFlags::SIGNALED);
         unsafe { Some(device.create_fence(&fci, None).unwrap()) }
     }
@@ -1022,7 +1036,7 @@ impl Configuration {
     pub fn record_command_buffer(&mut self, command_buffer: &CommandBuffer, image_index: u32) {
         let command_buffer_begin_info =
             CommandBufferBeginInfo::default().flags(CommandBufferUsageFlags::empty());
-        let device = self.logical_device.as_ref().unwrap();
+        let device = self.device.as_ref().unwrap();
         unsafe {
             device
                 .begin_command_buffer(*command_buffer, &command_buffer_begin_info)
@@ -1054,11 +1068,6 @@ impl Configuration {
                 &render_pass_begin_info,
                 SubpassContents::INLINE,
             );
-            device.cmd_bind_pipeline(
-                *command_buffer,
-                PipelineBindPoint::GRAPHICS,
-                self.graphics_pipelines[0],
-            );
             device.cmd_set_viewport(*command_buffer, 0, &self.viewports);
             device.cmd_set_scissor(*command_buffer, 0, &self.scissors);
             device.cmd_bind_pipeline(
@@ -1072,7 +1081,14 @@ impl Configuration {
 
             device.cmd_bind_vertex_buffers(*command_buffer, 0, &vertex_buffers, &offsets);
             device.cmd_bind_index_buffer(*command_buffer, self.index_buffer, 0, IndexType::UINT16);
-            //            device.cmd_draw(*command_buffer, self.vertices.len() as u32, 1, 0, 0);
+            device.cmd_bind_descriptor_sets(
+                *command_buffer,
+                PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[self.descriptor_sets[image_index as usize]],
+                &[],
+            );
             device.cmd_draw_indexed(*command_buffer, self.indices.len() as u32, 1, 0, 0, 0);
             device.cmd_end_render_pass(*command_buffer);
             device.end_command_buffer(*command_buffer).unwrap();
@@ -1144,8 +1160,13 @@ impl Configuration {
         device: &Device,
         buffer_type: &Vec<T>,
         command_pool: &CommandPool,
+        buffer_usage_flags: BufferUsageFlags,
+        memory_property_flags: MemoryPropertyFlags,
         queue: &Queue,
-    ) -> Result<(Buffer, DeviceMemory), ()> {
+    ) -> Result<(Buffer, DeviceMemory), ()>
+    where
+        T: std::fmt::Debug,
+    {
         let buffer_size = (size_of::<T>() * buffer_type.len()) as u64;
         let mut staging_memory = DeviceMemory::default();
         let mut buffer_memory = DeviceMemory::default();
@@ -1155,7 +1176,7 @@ impl Configuration {
             device,
             buffer_size as u64,
             BufferUsageFlags::TRANSFER_SRC,
-            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+            memory_property_flags,
             &mut staging_memory,
         );
         unsafe {
@@ -1172,8 +1193,8 @@ impl Configuration {
                 *physical_device,
                 device,
                 buffer_size as u64,
-                BufferUsageFlags::TRANSFER_DST | BufferUsageFlags::VERTEX_BUFFER,
-                MemoryPropertyFlags::DEVICE_LOCAL,
+                BufferUsageFlags::TRANSFER_DST | buffer_usage_flags,
+                memory_property_flags,
                 &mut buffer_memory,
             );
 
@@ -1196,12 +1217,15 @@ impl Configuration {
         (self.vertex_buffer, self.vertex_buffer_memory) = Self::create_buffer(
             self.instance.as_ref().unwrap(),
             self.physical_device.as_ref().unwrap(),
-            self.logical_device.as_ref().unwrap(),
+            self.device.as_ref().unwrap(),
             &self.vertices,
             self.command_pool.as_ref().unwrap(),
+            BufferUsageFlags::VERTEX_BUFFER,
+            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
             self.graphics_queue.as_ref().unwrap(),
         )
         .unwrap();
+        info!("Vertex buffers have been created");
         Ok(self)
     }
 
@@ -1209,32 +1233,49 @@ impl Configuration {
         (self.index_buffer, self.index_buffer_memory) = Self::create_buffer(
             self.instance.as_ref().unwrap(),
             self.physical_device.as_ref().unwrap(),
-            self.logical_device.as_ref().unwrap(),
+            self.device.as_ref().unwrap(),
             &self.indices,
             self.command_pool.as_ref().unwrap(),
+            BufferUsageFlags::INDEX_BUFFER,
+            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
             self.graphics_queue.as_ref().unwrap(),
         )
         .unwrap();
+        info!("Index buffers have been created");
         Ok(self)
     }
 
     pub fn create_uniform_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        let device = self.logical_device.as_ref().unwrap();
-        for _i in 0..MAX_FLIGHT_FENCES {
+        let device = self.device.as_ref().unwrap();
+        let buffer_size_dummy: Vec<UniformBufferObject> = vec![
+            UniformBufferObject {
+                model: Matrix4::zero(),
+                view: Matrix4::zero(),
+                projection: Matrix4::zero(),
+            };
+            self.swapchain_images.len()
+        ];
+
+        
+        self.uniform_buffers.clear();
+        self.uniform_buffer_memory.clear();
+
+        for _i in 0..self.swapchain_images.len() {
             let (uniform_buffer, uniform_buffer_memory) = Self::create_buffer(
                 self.instance.as_ref().unwrap(),
                 self.physical_device.as_ref().unwrap(),
                 device,
-                self.uniform_buffers.as_ref(),
+                &buffer_size_dummy,
                 self.command_pool.as_ref().unwrap(),
+                BufferUsageFlags::UNIFORM_BUFFER,
+                MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
                 self.graphics_queue.as_ref().unwrap(),
             )
             .unwrap();
-
             self.uniform_buffers.push(uniform_buffer);
             self.uniform_buffer_memory.push(uniform_buffer_memory);
         }
-
+        info!("Uniform buffers have been created");
         Ok(self)
     }
 
@@ -1295,30 +1336,81 @@ impl Configuration {
                 DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
 
             match self
-                .logical_device
+                .device
                 .as_ref()
                 .unwrap()
                 .create_descriptor_set_layout(&descriptor_set_create_info, None)
             {
                 Ok(d) => {
-                    self.descriptor_set_layout = Some(d);
+                    self.descriptor_set_layout = vec![d];
                 }
                 Err(e) => {
                     error!("{:?}", e);
                 }
             }
+            info!("Descriptor Set Layout has been created!");
         }
 
         Ok(self)
     }
 
-    pub fn create_descriptor_pool(&mut self) -> Result<&mut Configuration, ()> { 
-        let ubo_size = DescriptorPoolSize::default()
+    pub fn create_descriptor_pool(&mut self) -> Result<&mut Configuration, ()> {
+        let ubo_size = vec![DescriptorPoolSize::default()
             .ty(DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(self.swapchain_images.len() as u32);
+            .descriptor_count(MAX_FLIGHT_FENCES)];
+
+        let pool_create_info = DescriptorPoolCreateInfo::default()
+            .pool_sizes(&ubo_size)
+            .max_sets(MAX_FLIGHT_FENCES);
+
+        unsafe {
+            self.descriptor_pool = self
+                .device
+                .as_ref()
+                .unwrap()
+                .create_descriptor_pool(&pool_create_info, None)
+                .unwrap()
+        };
+        info!("Descriptor Pool has been created!");
         Ok(self)
     }
-    
+
+    pub fn create_descriptor_sets(&mut self) -> Result<&mut Configuration, ()> {
+        let layouts = vec![self.descriptor_set_layout[0]; MAX_FLIGHT_FENCES as usize];
+        let descriptor_set_allocate_info = DescriptorSetAllocateInfo::default()
+            .descriptor_pool(self.descriptor_pool)
+            .set_layouts(&layouts);
+
+        self.descriptor_sets = unsafe {
+            self.device
+                .as_ref()
+                .unwrap()
+                .allocate_descriptor_sets(&descriptor_set_allocate_info)
+                .expect("Failed to allocate descriptor sets")
+        };
+        for i in 0..MAX_FLIGHT_FENCES {
+            let buffer_info = vec![DescriptorBufferInfo::default()
+                .buffer(self.uniform_buffers[i as usize])
+                .offset(0)
+                .range(size_of::<UniformBufferObject>() as u64)];
+
+            let write_dst_set = vec![WriteDescriptorSet::default()
+                .dst_set(self.descriptor_sets[i as usize])
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(&buffer_info)];
+
+            unsafe {
+                self.device
+                    .as_ref()
+                    .unwrap()
+                    .update_descriptor_sets(&write_dst_set, &[]);
+            }
+        }
+        info!("Descriptor Set has been created!");
+        Ok(self)
+    }
 
     pub fn build(&mut self) -> Configuration {
         Configuration {
@@ -1327,7 +1419,7 @@ impl Configuration {
             physical_device: self.physical_device,
             physical_device_features: self.physical_device_features,
             queue_family_indices: self.queue_family_indices,
-            logical_device: self.logical_device.clone(),
+            device: self.device.clone(),
             graphics_queue: self.graphics_queue,
             presentation_queue: self.presentation_queue,
             device_extensions: self.device_extensions.clone(),
@@ -1346,6 +1438,7 @@ impl Configuration {
             scissors: self.scissors.clone(),
 
             render_pass: self.render_pass,
+            pipeline_layout: self.pipeline_layout,
             graphics_pipelines: self.graphics_pipelines.clone(),
 
             framebuffers: self.framebuffers.clone(),
@@ -1356,7 +1449,9 @@ impl Configuration {
             render_finished_semaphores: self.render_finished_semaphores.clone(),
             in_flight_fences: self.in_flight_fences.clone(),
 
-            descriptor_set_layout: self.descriptor_set_layout,
+            descriptor_pool: self.descriptor_pool.clone(),
+            descriptor_set_layout: self.descriptor_set_layout.clone(),
+            descriptor_sets: self.descriptor_sets.clone(),
 
             vertices: self.vertices.clone(),
             vertex_buffer: self.vertex_buffer.clone(),
@@ -1368,6 +1463,7 @@ impl Configuration {
 
             uniform_buffers: self.uniform_buffers.clone(),
             uniform_buffer_memory: self.uniform_buffer_memory.clone(),
+
             width: self.width,
             height: self.height,
 
@@ -1380,11 +1476,7 @@ impl Configuration {
 
     pub fn recreate_swapchain(&mut self) {
         unsafe {
-            self.logical_device
-                .as_ref()
-                .unwrap()
-                .device_wait_idle()
-                .unwrap();
+            self.device.as_ref().unwrap().device_wait_idle().unwrap();
 
             self.destroy_swapchain();
             let _ = self
@@ -1400,37 +1492,37 @@ impl Configuration {
                 .unwrap()
                 .create_framebuffers()
                 .unwrap()
-                .create_command_buffer();
+                .create_uniform_buffer()
+                .unwrap()
+                .create_command_buffer()
+                .unwrap();
         }
     }
 
     fn destroy_swapchain(&mut self) {
         unsafe {
-            self.framebuffers.iter().for_each(|f| {
-                self.logical_device
-                    .as_ref()
-                    .unwrap()
-                    .destroy_framebuffer(*f, None)
-            });
+            let device = self.device.as_ref().unwrap();
+            self.uniform_buffers.iter().for_each(|b| device.destroy_buffer(*b, None));
+            self.uniform_buffer_memory.iter().for_each(|ub| device.free_memory(*ub, None));
+            self.framebuffers
+                .iter()
+                .for_each(|f| device.destroy_framebuffer(*f, None));
             self.framebuffers.clear();
-            self.logical_device
+            self.device
                 .as_ref()
                 .unwrap()
                 .free_command_buffers(self.command_pool.unwrap(), &self.command_buffer);
-            self.logical_device
+            self.device
                 .as_ref()
                 .unwrap()
                 .destroy_pipeline(self.graphics_pipelines[0], None);
-            self.logical_device
+            self.device
                 .as_ref()
                 .unwrap()
                 .destroy_render_pass(self.render_pass.unwrap(), None);
-            self.image_views.iter().for_each(|v| {
-                self.logical_device
-                    .as_ref()
-                    .unwrap()
-                    .destroy_image_view(*v, None)
-            });
+            self.image_views
+                .iter()
+                .for_each(|v| device.destroy_image_view(*v, None));
             self.image_views.clear();
             self.swapchain_device
                 .as_ref()
