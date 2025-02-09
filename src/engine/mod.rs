@@ -2,19 +2,19 @@ use std::ops::Add;
 use std::time::Instant;
 
 use ash::vk::{
-    CommandBufferResetFlags, Handle, MemoryMapFlags, PipelineStageFlags, PresentInfoKHR, SubmitInfo,
+    Handle, MemoryMapFlags, PipelineStageFlags, PresentInfoKHR, SubmitInfo,
 };
+use ash::vk::CommandBufferResetFlags;
 use cgmath::{perspective, point3, vec3, Deg, Matrix4};
-use log::{debug, warn};
-use log::{error, info};
+use configuration::buffer_types::uniform_buffer_types::UniformBufferObject;
+use log::error;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use crate::engine::configuration::Configuration;
 use crate::engine::configuration::MAX_FLIGHT_FENCES;
 
-use super::uniform_buffer_object::UniformBufferObject;
-
+mod configuration;
 #[derive(Default)]
 pub struct Engine {
     configuration: Configuration,

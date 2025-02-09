@@ -9,7 +9,7 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
-use crate::engine::engine::Engine;
+use crate::engine::Engine;
 
 #[derive(Default)]
 pub struct App {
