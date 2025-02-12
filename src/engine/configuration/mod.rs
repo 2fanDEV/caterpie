@@ -44,7 +44,6 @@ use ash::{
     Device, Entry, Instance,
 };
 
-
 use buffer_types::{uniform_buffer_types::UniformBufferObject, vertex::Vertex};
 use cgmath::{vec2, vec3, Matrix4, Zero};
 use log::*;
@@ -56,8 +55,8 @@ use winit::{
 
 use crate::utils;
 
-mod textures;
 pub mod buffer_types;
+mod textures;
 pub const MAX_FLIGHT_FENCES: u32 = 3;
 
 #[allow(clippy::pedantic)]
@@ -110,6 +109,9 @@ pub struct Configuration {
     index_buffer_memory: DeviceMemory,
     width: u32,
     height: u32,
+
+    texture_image: Image,
+    texture_image_memory: DeviceMemory,
 
     descriptor_pool: DescriptorPool,
     descriptor_set_layout: Vec<DescriptorSetLayout>,
@@ -285,6 +287,7 @@ impl Configuration {
             uniform_buffer_memory: Vec::new(),
             descriptor_sets: Vec::new(),
             descriptor_set_layout: Vec::new(),
+
             ..Default::default()
         };
     }
@@ -1036,6 +1039,51 @@ impl Configuration {
         0
     }
 
+    fn single_time_command(&self) -> Result<CommandBuffer, ()> {
+        let command_buffer_allocate_info = CommandBufferAllocateInfo::default()
+            .level(CommandBufferLevel::PRIMARY)
+            .command_pool(self.command_pool.unwrap())
+            .command_buffer_count(1);
+
+        let command_buffers = unsafe {
+            self.device
+                .as_ref()
+                .unwrap()
+                .allocate_command_buffers(&command_buffer_allocate_info)
+                .unwrap()
+        };
+
+        let command_buffer_begin_info =
+            CommandBufferBeginInfo::default().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        unsafe {
+            self.device
+                .as_ref()
+                .unwrap()
+                .begin_command_buffer(command_buffers[0], &command_buffer_begin_info)
+                .unwrap()
+        };
+
+        Ok(command_buffers[0])
+    }
+
+    fn end_single_time_command(&self, command_buffer: &CommandBuffer) {
+        let command_buffers = vec![*command_buffer];
+        let device = self.device.as_ref().unwrap();
+        unsafe {
+            device
+                .end_command_buffer(*command_buffer)
+                .unwrap();
+
+            let submit_info = vec![SubmitInfo::default().command_buffers(&command_buffers)];
+            device
+                .queue_submit(self.graphics_queue.unwrap(), &submit_info, Fence::null())
+                .unwrap();
+
+            device.queue_wait_idle(self.graphics_queue.unwrap()).unwrap();
+            device.free_command_buffers(self.command_pool.unwrap(), &command_buffers);
+        };
+    }
+
     pub fn record_command_buffer(&mut self, command_buffer: &CommandBuffer, image_index: u32) {
         let command_buffer_begin_info =
             CommandBufferBeginInfo::default().flags(CommandBufferUsageFlags::empty());
@@ -1158,6 +1206,7 @@ impl Configuration {
     }
 
     pub fn create_buffer<T>(
+        &self,
         instance: &Instance,
         physical_device: &PhysicalDevice,
         device: &Device,
@@ -1201,13 +1250,10 @@ impl Configuration {
                 &mut buffer_memory,
             );
 
-            Self::copy_buffer(
-                device,
+            self.copy_buffer(
                 staging_buffer,
                 buffer,
                 buffer_size,
-                &command_pool,
-                &queue,
             );
 
             device.destroy_buffer(staging_buffer, None);
@@ -1217,7 +1263,7 @@ impl Configuration {
     }
 
     pub fn create_vertex_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        (self.vertex_buffer, self.vertex_buffer_memory) = Self::create_buffer(
+        (self.vertex_buffer, self.vertex_buffer_memory) = self.create_buffer(
             self.instance.as_ref().unwrap(),
             self.physical_device.as_ref().unwrap(),
             self.device.as_ref().unwrap(),
@@ -1233,7 +1279,7 @@ impl Configuration {
     }
 
     pub fn create_index_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        (self.index_buffer, self.index_buffer_memory) = Self::create_buffer(
+        (self.index_buffer, self.index_buffer_memory) = self.create_buffer(
             self.instance.as_ref().unwrap(),
             self.physical_device.as_ref().unwrap(),
             self.device.as_ref().unwrap(),
@@ -1259,12 +1305,11 @@ impl Configuration {
             self.swapchain_images.len()
         ];
 
-        
         self.uniform_buffers.clear();
         self.uniform_buffer_memory.clear();
 
         for _i in 0..self.swapchain_images.len() {
-            let (uniform_buffer, uniform_buffer_memory) = Self::create_buffer(
+            let (uniform_buffer, uniform_buffer_memory) = self.create_buffer(
                 self.instance.as_ref().unwrap(),
                 self.physical_device.as_ref().unwrap(),
                 device,
@@ -1283,41 +1328,20 @@ impl Configuration {
     }
 
     fn copy_buffer(
-        device: &Device,
+        &self,
         src_buffer: Buffer,
         dst_buffer: Buffer,
         size: DeviceSize,
-        command_pool: &CommandPool,
-        queue: &Queue,
     ) {
-        let command_buffer_allocate_info = CommandBufferAllocateInfo::default()
-            .level(CommandBufferLevel::PRIMARY)
-            .command_pool(*command_pool)
-            .command_buffer_count(1);
-
         unsafe {
-            let command_buffer = device
-                .allocate_command_buffers(&command_buffer_allocate_info)
-                .unwrap();
+        let command_buffer= self.single_time_command().unwrap();
+               let device = self.device.as_ref().unwrap(); 
 
-            let begin_info =
-                CommandBufferBeginInfo::default().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-            device
-                .begin_command_buffer(command_buffer[0], &begin_info)
-                .unwrap();
             let buffer_copy = vec![BufferCopy::default().src_offset(0).dst_offset(0).size(size)];
 
-            device.cmd_copy_buffer(command_buffer[0], src_buffer, dst_buffer, &buffer_copy);
-
-            device.end_command_buffer(command_buffer[0]).unwrap();
-
-            let submit_info = &[SubmitInfo::default().command_buffers(&command_buffer)];
-            device
-                .queue_submit(*queue, submit_info, Fence::null())
-                .unwrap();
-            device.queue_wait_idle(*queue).unwrap();
-            device.free_command_buffers(*command_pool, &command_buffer);
+            device.cmd_copy_buffer(command_buffer, src_buffer, dst_buffer, &buffer_copy);
+            
+            self.end_single_time_command(&command_buffer);
         };
     }
 
@@ -1466,6 +1490,8 @@ impl Configuration {
 
             uniform_buffers: self.uniform_buffers.clone(),
             uniform_buffer_memory: self.uniform_buffer_memory.clone(),
+            texture_image: self.texture_image,
+            texture_image_memory: self.texture_image_memory,
 
             width: self.width,
             height: self.height,
@@ -1505,8 +1531,12 @@ impl Configuration {
     fn destroy_swapchain(&mut self) {
         unsafe {
             let device = self.device.as_ref().unwrap();
-            self.uniform_buffers.iter().for_each(|b| device.destroy_buffer(*b, None));
-            self.uniform_buffer_memory.iter().for_each(|ub| device.free_memory(*ub, None));
+            self.uniform_buffers
+                .iter()
+                .for_each(|b| device.destroy_buffer(*b, None));
+            self.uniform_buffer_memory
+                .iter()
+                .for_each(|ub| device.free_memory(*ub, None));
             self.framebuffers
                 .iter()
                 .for_each(|f| device.destroy_framebuffer(*f, None));

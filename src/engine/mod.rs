@@ -47,6 +47,8 @@ impl Engine {
             .unwrap()
             .create_command_pool()
             .unwrap()
+            .create_texture_image()
+            .unwrap()
             .create_vertex_buffer()
             .unwrap()
             .create_index_buffer()
