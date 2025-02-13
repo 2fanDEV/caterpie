@@ -1070,16 +1070,16 @@ impl Configuration {
         let command_buffers = vec![*command_buffer];
         let device = self.device.as_ref().unwrap();
         unsafe {
-            device
-                .end_command_buffer(*command_buffer)
-                .unwrap();
-
-            let submit_info = vec![SubmitInfo::default().command_buffers(&command_buffers)];
+            device.end_command_buffer(*command_buffer).unwrap();
+            let submit_info = vec![SubmitInfo::default()
+                .command_buffers(&command_buffers)];
             device
                 .queue_submit(self.graphics_queue.unwrap(), &submit_info, Fence::null())
                 .unwrap();
-
-            device.queue_wait_idle(self.graphics_queue.unwrap()).unwrap();
+            warn!("LEL");
+            device
+                .queue_wait_idle(self.graphics_queue.unwrap())
+                .unwrap();
             device.free_command_buffers(self.command_pool.unwrap(), &command_buffers);
         };
     }
@@ -1250,11 +1250,7 @@ impl Configuration {
                 &mut buffer_memory,
             );
 
-            self.copy_buffer(
-                staging_buffer,
-                buffer,
-                buffer_size,
-            );
+            self.copy_buffer(staging_buffer, buffer, buffer_size);
 
             device.destroy_buffer(staging_buffer, None);
             device.free_memory(staging_memory, None);
@@ -1263,33 +1259,35 @@ impl Configuration {
     }
 
     pub fn create_vertex_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        (self.vertex_buffer, self.vertex_buffer_memory) = self.create_buffer(
-            self.instance.as_ref().unwrap(),
-            self.physical_device.as_ref().unwrap(),
-            self.device.as_ref().unwrap(),
-            &self.vertices,
-            self.command_pool.as_ref().unwrap(),
-            BufferUsageFlags::VERTEX_BUFFER,
-            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-            self.graphics_queue.as_ref().unwrap(),
-        )
-        .unwrap();
+        (self.vertex_buffer, self.vertex_buffer_memory) = self
+            .create_buffer(
+                self.instance.as_ref().unwrap(),
+                self.physical_device.as_ref().unwrap(),
+                self.device.as_ref().unwrap(),
+                &self.vertices,
+                self.command_pool.as_ref().unwrap(),
+                BufferUsageFlags::VERTEX_BUFFER,
+                MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+                self.graphics_queue.as_ref().unwrap(),
+            )
+            .unwrap();
         info!("Vertex buffers have been created");
         Ok(self)
     }
 
     pub fn create_index_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        (self.index_buffer, self.index_buffer_memory) = self.create_buffer(
-            self.instance.as_ref().unwrap(),
-            self.physical_device.as_ref().unwrap(),
-            self.device.as_ref().unwrap(),
-            &self.indices,
-            self.command_pool.as_ref().unwrap(),
-            BufferUsageFlags::INDEX_BUFFER,
-            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-            self.graphics_queue.as_ref().unwrap(),
-        )
-        .unwrap();
+        (self.index_buffer, self.index_buffer_memory) = self
+            .create_buffer(
+                self.instance.as_ref().unwrap(),
+                self.physical_device.as_ref().unwrap(),
+                self.device.as_ref().unwrap(),
+                &self.indices,
+                self.command_pool.as_ref().unwrap(),
+                BufferUsageFlags::INDEX_BUFFER,
+                MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+                self.graphics_queue.as_ref().unwrap(),
+            )
+            .unwrap();
         info!("Index buffers have been created");
         Ok(self)
     }
@@ -1309,17 +1307,18 @@ impl Configuration {
         self.uniform_buffer_memory.clear();
 
         for _i in 0..self.swapchain_images.len() {
-            let (uniform_buffer, uniform_buffer_memory) = self.create_buffer(
-                self.instance.as_ref().unwrap(),
-                self.physical_device.as_ref().unwrap(),
-                device,
-                &buffer_size_dummy,
-                self.command_pool.as_ref().unwrap(),
-                BufferUsageFlags::UNIFORM_BUFFER,
-                MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-                self.graphics_queue.as_ref().unwrap(),
-            )
-            .unwrap();
+            let (uniform_buffer, uniform_buffer_memory) = self
+                .create_buffer(
+                    self.instance.as_ref().unwrap(),
+                    self.physical_device.as_ref().unwrap(),
+                    device,
+                    &buffer_size_dummy,
+                    self.command_pool.as_ref().unwrap(),
+                    BufferUsageFlags::UNIFORM_BUFFER,
+                    MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+                    self.graphics_queue.as_ref().unwrap(),
+                )
+                .unwrap();
             self.uniform_buffers.push(uniform_buffer);
             self.uniform_buffer_memory.push(uniform_buffer_memory);
         }
@@ -1327,20 +1326,15 @@ impl Configuration {
         Ok(self)
     }
 
-    fn copy_buffer(
-        &self,
-        src_buffer: Buffer,
-        dst_buffer: Buffer,
-        size: DeviceSize,
-    ) {
+    fn copy_buffer(&self, src_buffer: Buffer, dst_buffer: Buffer, size: DeviceSize) {
         unsafe {
-        let command_buffer= self.single_time_command().unwrap();
-               let device = self.device.as_ref().unwrap(); 
+            let command_buffer = self.single_time_command().unwrap();
+            let device = self.device.as_ref().unwrap();
 
             let buffer_copy = vec![BufferCopy::default().src_offset(0).dst_offset(0).size(size)];
 
             device.cmd_copy_buffer(command_buffer, src_buffer, dst_buffer, &buffer_copy);
-            
+
             self.end_single_time_command(&command_buffer);
         };
     }

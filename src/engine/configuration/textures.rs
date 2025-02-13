@@ -1,16 +1,27 @@
-use std::{fs::File, io::Error};
+use std::{
+    fs::File,
+    io::{Error, ErrorKind},
+};
 
+use anyhow::anyhow;
 use ash::{
     vk::{
-        AccessFlags, BufferMemoryBarrier, BufferUsageFlags, CommandBuffer, CommandPool, DependencyFlags, DeviceMemory, DeviceSize, Extent3D, Format, Image, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier, ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags, MemoryAllocateInfo, MemoryBarrier, MemoryMapFlags, MemoryPropertyFlags, PhysicalDevice, PipelineStageFlags, Queue, QueueFamilyProperties, QueueFlags, SampleCountFlags, SharingMode
+        self, AccessFlags, Buffer, BufferImageCopy, BufferMemoryBarrier, BufferUsageFlags,
+        CommandBuffer, CommandPool, DependencyFlags, DeviceMemory, DeviceSize, Extent3D, Format,
+        Image, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo, ImageLayout,
+        ImageMemoryBarrier, ImageSubresourceLayers, ImageSubresourceRange, ImageTiling, ImageType,
+        ImageUsageFlags, MemoryAllocateInfo, MemoryBarrier, MemoryMapFlags, MemoryPropertyFlags,
+        Offset3D, PhysicalDevice, PipelineStageFlags, Queue, QueueFamilyProperties, QueueFlags,
+        SampleCountFlags, SharingMode,
     },
     Device, Instance,
 };
-use log::warn;
+use log::{debug, warn};
 use png::BitDepth;
 
 use super::Configuration;
 
+#[derive(Debug, Clone, Copy)]
 struct Texture {
     width: u32,
     height: u32,
@@ -90,12 +101,26 @@ impl Configuration {
             Format::R8G8B8A8_SRGB,
             ImageTiling::OPTIMAL,
             ImageUsageFlags::TRANSFER_DST | ImageUsageFlags::SAMPLED,
-            MemoryPropertyFlags::empty(),
+            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
         )
         .unwrap();
 
         self.texture_image = image;
         self.texture_image_memory = image_memory;
+
+        self.transition_image_layout(
+            image,
+            Format::R8G8B8A8_SRGB,
+            ImageLayout::UNDEFINED,
+            ImageLayout::TRANSFER_DST_OPTIMAL,
+        )
+        .unwrap();
+        self.copy_buffer_to_image(staging_buffer, image, texture);
+
+        unsafe {
+            device.destroy_buffer(staging_buffer, None);
+            device.free_memory(staging_buffer_memory, None)
+        };
 
         Ok(self)
     }
@@ -152,8 +177,25 @@ impl Configuration {
         format: Format,
         old_image_layout: ImageLayout,
         new_image_layout: ImageLayout,
-    ) {
+    ) -> Result<(), anyhow::Error> {
         let command = self.single_time_command().unwrap();
+
+        let (src_access_mask, dst_access_mask, src_stage_mask, dst_stage_mask) =
+            match (old_image_layout, new_image_layout) {
+                (ImageLayout::UNDEFINED, ImageLayout::TRANSFER_DST_OPTIMAL) => (
+                    AccessFlags::empty(),
+                    AccessFlags::TRANSFER_WRITE,
+                    PipelineStageFlags::TOP_OF_PIPE,
+                    PipelineStageFlags::TRANSFER,
+                ),
+                (ImageLayout::TRANSFER_DST_OPTIMAL, ImageLayout::SHADING_RATE_OPTIMAL_NV) => (
+                    AccessFlags::TRANSFER_WRITE,
+                    AccessFlags::SHADER_READ,
+                    PipelineStageFlags::TRANSFER,
+                    PipelineStageFlags::FRAGMENT_SHADER,
+                ),
+                _ => return Err(anyhow!("Unsupported image layout transition")),
+            };
 
         let sub_resource_range = ImageSubresourceRange::default()
             .aspect_mask(ImageAspectFlags::COLOR)
@@ -169,23 +211,56 @@ impl Configuration {
             .dst_queue_family_index(0)
             .image(image)
             .subresource_range(sub_resource_range)
-            .src_access_mask(AccessFlags::empty())
-            .dst_access_mask(AccessFlags::empty())];
+            .src_access_mask(src_access_mask)
+            .dst_access_mask(dst_access_mask)];
 
         let memory_barrier = vec![MemoryBarrier::default()];
 
         let barrier_memory_barrier = vec![BufferMemoryBarrier::default()];
 
-        unsafe { self.device.as_ref().unwrap().cmd_pipeline_barrier(
-            command,
-            PipelineStageFlags::empty(),
-            PipelineStageFlags::empty(),
-            DependencyFlags::empty(),
-            &memory_barrier,
-            &barrier_memory_barrier,
-            &pipeline,
-        ) };
+        unsafe {
+            self.device.as_ref().unwrap().cmd_pipeline_barrier(
+                command,
+                src_stage_mask,
+                dst_stage_mask,
+                DependencyFlags::empty(),
+                &memory_barrier,
+                &barrier_memory_barrier,
+                &pipeline,
+            )
+        };
 
+        debug!("{:?}", command);
         self.end_single_time_command(&command);
+        Ok(())
+    }
+
+    fn copy_buffer_to_image(&self, buffer: Buffer, image: Image, texture: Texture) {
+        let command_buffer = self.single_time_command().unwrap();
+
+        let image_subresource_range = ImageSubresourceLayers::default()
+            .aspect_mask(ImageAspectFlags::COLOR)
+            .mip_level(0)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let region = BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(image_subresource_range)
+            .image_offset(Offset3D::default().x(0).y(0).z(0))
+            .image_extent(texture.into());
+
+        unsafe {
+            self.device.as_ref().unwrap().cmd_copy_buffer_to_image(
+                command_buffer,
+                buffer,
+                image,
+                ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            )
+        };
+        self.end_single_time_command(&command_buffer);
     }
 }
