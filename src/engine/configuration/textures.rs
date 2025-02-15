@@ -1,23 +1,18 @@
 use std::{
-    fs::File,
-    io::{Error, ErrorKind},
+    borrow::BorrowMut, fs::File, io::{Error, ErrorKind}
 };
 
 use anyhow::anyhow;
 use ash::{
     vk::{
-        self, AccessFlags, Buffer, BufferImageCopy, BufferMemoryBarrier, BufferUsageFlags,
-        CommandBuffer, CommandPool, DependencyFlags, DeviceMemory, DeviceSize, Extent3D, Format,
-        Image, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo, ImageLayout,
-        ImageMemoryBarrier, ImageSubresourceLayers, ImageSubresourceRange, ImageTiling, ImageType,
-        ImageUsageFlags, MemoryAllocateInfo, MemoryBarrier, MemoryMapFlags, MemoryPropertyFlags,
-        Offset3D, PhysicalDevice, PipelineStageFlags, Queue, QueueFamilyProperties, QueueFlags,
-        SampleCountFlags, SharingMode,
+        self, AccessFlags, BorderColor, Buffer, BufferImageCopy, BufferMemoryBarrier, BufferUsageFlags, CommandBuffer, CommandPool, CompareOp, DependencyFlags, DeviceMemory, DeviceSize, Extent3D, Filter, Format, Image, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers, ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, MemoryAllocateInfo, MemoryBarrier, MemoryMapFlags, MemoryPropertyFlags, Offset3D, PhysicalDevice, PipelineStageFlags, Queue, QueueFamilyProperties, QueueFlags, SampleCountFlags, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, SharingMode, QUEUE_FAMILY_IGNORED
     },
     Device, Instance,
 };
-use log::{debug, warn};
+use log::{debug, info, warn};
 use png::BitDepth;
+
+use crate::engine::configuration::QueueFamilyIndices;
 
 use super::Configuration;
 
@@ -61,37 +56,35 @@ impl Configuration {
                 return Err(err);
             }
         });
-        let read_info = image.read_info();
-        let (tex_width, tex_height) = read_info.as_ref().unwrap().info().size();
-        warn!("{:?}", read_info.as_ref().unwrap().info());
-        let image_size: DeviceSize = (tex_width * tex_height * 4).into();
-        let b_type = vec![image_size];
+        let mut read_info = image.read_info()?;
+        let (tex_width, tex_height) = read_info.info().size();
+        let mut pixels = vec![0; read_info.info().raw_bytes()];
+        read_info.next_frame(&mut pixels)?;
         let texture = Texture::new(tex_width, tex_height, 0, 1);
-
-        let (staging_buffer, staging_buffer_memory) = self
-            .create_buffer(
-                self.instance.as_ref().unwrap(),
-                self.physical_device.as_ref().unwrap(),
-                device,
-                &b_type,
-                self.command_pool.as_ref().unwrap(),
-                BufferUsageFlags::TRANSFER_SRC,
-                MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
-                self.graphics_queue.as_ref().unwrap(),
-            )
-            .unwrap();
+        let buffer_size = vec![read_info.info().raw_bytes() as u64];
+        let mut staging_buffer_memory: DeviceMemory = DeviceMemory::null();
+        let staging_buffer = Self::allocate_buffer(
+            self.instance.as_ref().unwrap(),
+            self.physical_device.unwrap(),
+            device,
+            buffer_size[0],
+            BufferUsageFlags::TRANSFER_SRC,
+            MemoryPropertyFlags::HOST_COHERENT | MemoryPropertyFlags::HOST_VISIBLE,
+            &mut staging_buffer_memory,
+        );
 
         unsafe {
             let data = device
                 .map_memory(
                     staging_buffer_memory,
                     0,
-                    image_size,
+                    buffer_size[0],
                     MemoryMapFlags::empty(),
                 )
                 .unwrap();
+            std::ptr::copy_nonoverlapping(pixels.as_ptr(), data.cast(), pixels.len());
             device.unmap_memory(staging_buffer_memory);
-        };
+        }
 
         let (image, image_memory) = Self::create_image(
             device,
@@ -101,7 +94,7 @@ impl Configuration {
             Format::R8G8B8A8_SRGB,
             ImageTiling::OPTIMAL,
             ImageUsageFlags::TRANSFER_DST | ImageUsageFlags::SAMPLED,
-            MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+            MemoryPropertyFlags::DEVICE_LOCAL,
         )
         .unwrap();
 
@@ -116,12 +109,18 @@ impl Configuration {
         )
         .unwrap();
         self.copy_buffer_to_image(staging_buffer, image, texture);
-
+        self.transition_image_layout(
+            image,
+            Format::R8G8B8A8_SRGB,
+            ImageLayout::TRANSFER_DST_OPTIMAL,
+            ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        )
+        .unwrap();
         unsafe {
             device.destroy_buffer(staging_buffer, None);
             device.free_memory(staging_buffer_memory, None)
         };
-
+        info!("Texture Image has been created");
         Ok(self)
     }
 
@@ -188,7 +187,7 @@ impl Configuration {
                     PipelineStageFlags::TOP_OF_PIPE,
                     PipelineStageFlags::TRANSFER,
                 ),
-                (ImageLayout::TRANSFER_DST_OPTIMAL, ImageLayout::SHADING_RATE_OPTIMAL_NV) => (
+                (ImageLayout::TRANSFER_DST_OPTIMAL, ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
                     AccessFlags::TRANSFER_WRITE,
                     AccessFlags::SHADER_READ,
                     PipelineStageFlags::TRANSFER,
@@ -207,16 +206,12 @@ impl Configuration {
         let pipeline = vec![ImageMemoryBarrier::default()
             .old_layout(old_image_layout)
             .new_layout(new_image_layout)
-            .src_queue_family_index(0)
-            .dst_queue_family_index(0)
+            .src_queue_family_index(QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
             .image(image)
             .subresource_range(sub_resource_range)
             .src_access_mask(src_access_mask)
             .dst_access_mask(dst_access_mask)];
-
-        let memory_barrier = vec![MemoryBarrier::default()];
-
-        let barrier_memory_barrier = vec![BufferMemoryBarrier::default()];
 
         unsafe {
             self.device.as_ref().unwrap().cmd_pipeline_barrier(
@@ -224,14 +219,13 @@ impl Configuration {
                 src_stage_mask,
                 dst_stage_mask,
                 DependencyFlags::empty(),
-                &memory_barrier,
-                &barrier_memory_barrier,
+                &[] as &[MemoryBarrier],
+                &[] as &[BufferMemoryBarrier],
                 &pipeline,
             )
         };
 
-        debug!("{:?}", command);
-        self.end_single_time_command(&command);
+        self.end_single_time_command(command);
         Ok(())
     }
 
@@ -261,6 +255,45 @@ impl Configuration {
                 &[region],
             )
         };
-        self.end_single_time_command(&command_buffer);
+        self.end_single_time_command(command_buffer);
+    }
+
+    pub fn create_texture_image_view(&mut self) -> Result<&mut Configuration, ()> {
+        self.texture_image_view = self.clone()
+            .create_image_view(&self.texture_image, Format::R8G8B8A8_SRGB)
+            .unwrap();
+
+        Ok(self)
+    }
+
+    pub fn create_texture_sampler(&mut self) -> Result<&mut Configuration, ()> {
+        let device = self.device.as_ref().unwrap();
+        let properties = unsafe {
+            self.instance
+                .as_ref()
+                .unwrap()
+                .get_physical_device_properties(self.physical_device.unwrap())
+        };
+
+        let sampler_info = SamplerCreateInfo::default()
+            .mag_filter(Filter::LINEAR)
+            .min_filter(Filter::LINEAR)
+            .address_mode_u(SamplerAddressMode::REPEAT)
+            .address_mode_v(SamplerAddressMode::REPEAT)
+            .address_mode_w(SamplerAddressMode::REPEAT)
+            .anisotropy_enable(true)
+            .max_anisotropy(properties.limits.max_sampler_anisotropy)
+            .border_color(BorderColor::INT_OPAQUE_BLACK)
+            .unnormalized_coordinates(false)
+            .compare_enable(false)
+            .compare_op(CompareOp::ALWAYS)
+            .mipmap_mode(SamplerMipmapMode::LINEAR)
+            .mip_lod_bias(0.0)
+            .min_lod(0.0)
+            .max_lod(0.0);
+        
+        self.texture_sampler = unsafe { device.create_sampler(&sampler_info, None).unwrap() };
+        
+        Ok(self)
     }
 }

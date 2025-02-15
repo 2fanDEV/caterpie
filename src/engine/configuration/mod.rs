@@ -6,13 +6,13 @@ use std::{
 
 use ash::vk::{
     AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue,
-    ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, CopyDescriptorSet,
-    DescriptorBufferInfo, DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
+    ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DescriptorBufferInfo,
+    DescriptorImageInfo, DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
     DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
     DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory, DeviceSize, Fence,
     FenceCreateFlags, FenceCreateInfo, IndexType, MemoryAllocateInfo, MemoryMapFlags,
     MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineStageFlags,
-    RenderPassBeginInfo, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo,
+    RenderPassBeginInfo, Sampler, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo,
     SubpassContents, SubpassDependency, WriteDescriptorSet, SUBPASS_EXTERNAL,
 };
 use ash::{
@@ -111,11 +111,14 @@ pub struct Configuration {
     height: u32,
 
     texture_image: Image,
+    texture_image_view: ImageView,
     texture_image_memory: DeviceMemory,
 
     descriptor_pool: DescriptorPool,
     descriptor_set_layout: Vec<DescriptorSetLayout>,
     descriptor_sets: Vec<DescriptorSet>,
+
+    texture_sampler: Sampler,
 
     pub window_resized: bool,
 
@@ -155,7 +158,7 @@ impl QueueFamilyIndices {
             let queue_idx = queue_family_properties
                 .iter()
                 .enumerate()
-                .find(|(idx, &qf)| qf.queue_flags.contains(QueueFlags::GRAPHICS));
+                .find(|(_idx, &qf)| qf.queue_flags.contains(QueueFlags::GRAPHICS));
             match queue_idx {
                 Some(res) => queue_family_indices.graphics_family_index(res.0 as u32),
                 None => return Some(queue_family_indices),
@@ -415,6 +418,7 @@ impl Configuration {
     }
 
     pub fn is_device_suitable(&mut self, physical_device: &PhysicalDevice) -> bool {
+        let instance = self.instance.as_ref().unwrap();
         let queue_family_indices = QueueFamilyIndices::find_queue_family_indices(
             self.instance.as_ref().unwrap().clone(),
             self.surface_instance.as_ref().unwrap().clone(),
@@ -422,6 +426,10 @@ impl Configuration {
             *physical_device,
         )
         .expect("Failed to gather queue family indices");
+
+        let physical_device_features =
+            unsafe { instance.get_physical_device_features(*physical_device) };
+
         let mut adequate_swapchain = false;
         let extensions_enabled = self.check_device_extension_support(physical_device);
         if extensions_enabled {
@@ -432,8 +440,9 @@ impl Configuration {
                 physical_device,
             );
             self.swapchain_support_details = Some(swapchain_support_details.clone());
-            adequate_swapchain = !swapchain_support_details.formats.is_empty()
-                && !swapchain_support_details.present_modes.is_empty();
+            adequate_swapchain = !(swapchain_support_details.formats.is_empty()
+                && swapchain_support_details.present_modes.is_empty())
+                && physical_device_features.sampler_anisotropy != 0
         }
 
         queue_family_indices.is_complete() && extensions_enabled && adequate_swapchain
@@ -515,9 +524,11 @@ impl Configuration {
                 queue_family_indices.presentation_queue.unwrap(),
             ];
 
-            self.physical_device_features =
-                Some(instance.get_physical_device_features(self.physical_device.unwrap()));
-
+            self.physical_device_features = Some(
+                instance
+                    .get_physical_device_features(self.physical_device.unwrap())
+                    .sampler_anisotropy(true),
+            );
             let mut device_queue_create_infos = Vec::new();
             for queue_index in queue_indices {
                 device_queue_create_infos.push(
@@ -662,9 +673,31 @@ impl Configuration {
         Ok(self)
     }
 
+    fn create_image_view(
+        &mut self,
+        image: &Image,
+        format: Format,
+    ) -> Result<ImageView, ash::vk::Result> {
+        let device = self.device.as_ref().unwrap();
+        let sub_resource_range = ImageSubresourceRange::default()
+            .aspect_mask(ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let create_info = ImageViewCreateInfo::default()
+            .image(*image)
+            .view_type(ImageViewType::TYPE_2D)
+            .format(Format::R8G8B8A8_SRGB)
+            .subresource_range(sub_resource_range);
+
+        let image_view = unsafe { device.create_image_view(&create_info, None) };
+        image_view
+    }
     pub fn create_swapchain_image_views(&mut self) -> Result<&mut Configuration, &str> {
         let device = self.device.as_ref().unwrap();
-        let component_mapping = ComponentMapping::default()
+        /* let component_mapping = ComponentMapping::default()
             .r(ComponentSwizzle::IDENTITY)
             .g(ComponentSwizzle::IDENTITY)
             .b(ComponentSwizzle::IDENTITY)
@@ -675,23 +708,15 @@ impl Configuration {
             .base_mip_level(0)
             .level_count(1)
             .base_array_layer(0)
-            .layer_count(1);
+            .layer_count(1);*/
 
         self.image_views = self
+            .clone()
             .swapchain_images
             .iter()
             .map(|image| {
-                let image_view_create_info = ImageViewCreateInfo::default()
-                    .image(*image)
-                    .format(self.surface_format.unwrap().format)
-                    .view_type(ImageViewType::TYPE_2D)
-                    .components(component_mapping)
-                    .subresource_range(subresource_range);
-                unsafe {
-                    device
-                        .create_image_view(&image_view_create_info, None)
-                        .expect("Failed to create image view")
-                }
+                self.create_image_view(image, self.surface_format.unwrap().format)
+                    .unwrap()
             })
             .collect::<Vec<ImageView>>();
         Ok(self)
@@ -777,10 +802,10 @@ impl Configuration {
             .unwrap();
 
         self.vertices = vec![
-            Vertex::new(vec2(-0.5, -0.5), vec3(1.0, 0.0, 0.0)),
-            Vertex::new(vec2(0.5, -0.5), vec3(0.0, 1.0, 0.0)),
-            Vertex::new(vec2(0.5, 0.5), vec3(0.0, 0.0, 1.0)),
-            Vertex::new(vec2(-0.5, 0.5), vec3(1.0, 1.0, 1.0)),
+            Vertex::new(vec2(-0.5, -0.5), vec3(1.0, 0.0, 0.0), vec2(1.0, 0.0)),
+            Vertex::new(vec2(0.5, -0.5), vec3(0.0, 1.0, 0.0), vec2(0.0,0.0)),
+            Vertex::new(vec2(0.5, 0.5), vec3(0.0, 0.0, 1.0), vec2(0.0, 1.0)),
+            Vertex::new(vec2(-0.5, 0.5), vec3(1.0, 1.0, 1.0), vec2(1.0,1.0)),
         ];
 
         self.indices = vec![0, 1, 2, 2, 3, 0];
@@ -1066,17 +1091,15 @@ impl Configuration {
         Ok(command_buffers[0])
     }
 
-    fn end_single_time_command(&self, command_buffer: &CommandBuffer) {
-        let command_buffers = vec![*command_buffer];
+    fn end_single_time_command(&self, command_buffer: CommandBuffer) {
+        let command_buffers = vec![command_buffer];
         let device = self.device.as_ref().unwrap();
         unsafe {
-            device.end_command_buffer(*command_buffer).unwrap();
-            let submit_info = vec![SubmitInfo::default()
-                .command_buffers(&command_buffers)];
+            device.end_command_buffer(command_buffer).unwrap();
+            let submit_info = vec![SubmitInfo::default().command_buffers(&command_buffers)];
             device
                 .queue_submit(self.graphics_queue.unwrap(), &submit_info, Fence::null())
                 .unwrap();
-            warn!("LEL");
             device
                 .queue_wait_idle(self.graphics_queue.unwrap())
                 .unwrap();
@@ -1259,6 +1282,7 @@ impl Configuration {
     }
 
     pub fn create_vertex_buffer(&mut self) -> Result<&mut Configuration, ()> {
+        debug!("CREATING VERTEX BUFFER");
         (self.vertex_buffer, self.vertex_buffer_memory) = self
             .create_buffer(
                 self.instance.as_ref().unwrap(),
@@ -1330,12 +1354,16 @@ impl Configuration {
         unsafe {
             let command_buffer = self.single_time_command().unwrap();
             let device = self.device.as_ref().unwrap();
-
             let buffer_copy = vec![BufferCopy::default().src_offset(0).dst_offset(0).size(size)];
 
-            device.cmd_copy_buffer(command_buffer, src_buffer, dst_buffer, &buffer_copy);
+            self.device.as_ref().unwrap().cmd_copy_buffer(
+                command_buffer,
+                src_buffer,
+                dst_buffer,
+                &buffer_copy,
+            );
 
-            self.end_single_time_command(&command_buffer);
+            self.end_single_time_command(command_buffer)
         };
     }
 
@@ -1347,11 +1375,18 @@ impl Configuration {
 
     pub fn create_descriptor_set_layout(&mut self) -> Result<&mut Configuration, ()> {
         unsafe {
-            let bindings = vec![DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(ShaderStageFlags::VERTEX)];
+            let bindings = vec![
+                DescriptorSetLayoutBinding::default()
+                    .binding(0)
+                    .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(ShaderStageFlags::VERTEX),
+                DescriptorSetLayoutBinding::default()
+                    .binding(1)
+                    .descriptor_type(DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .stage_flags(ShaderStageFlags::FRAGMENT),
+            ];
 
             let descriptor_set_create_info =
                 DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
@@ -1376,9 +1411,14 @@ impl Configuration {
     }
 
     pub fn create_descriptor_pool(&mut self) -> Result<&mut Configuration, ()> {
-        let ubo_size = vec![DescriptorPoolSize::default()
-            .ty(DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(MAX_FLIGHT_FENCES)];
+        let ubo_size = vec![
+            DescriptorPoolSize::default()
+                .ty(DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(MAX_FLIGHT_FENCES),
+            DescriptorPoolSize::default()
+                .ty(DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(MAX_FLIGHT_FENCES),
+        ];
 
         let pool_create_info = DescriptorPoolCreateInfo::default()
             .pool_sizes(&ubo_size)
@@ -1415,19 +1455,32 @@ impl Configuration {
                 .offset(0)
                 .range(size_of::<UniformBufferObject>() as u64)];
 
-            let write_dst_set = vec![WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[i as usize])
-                .dst_binding(0)
-                .dst_array_element(0)
-                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(&buffer_info)];
-
+            let image_info = vec![DescriptorImageInfo::default()
+                .image_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(self.texture_image_view)
+                .sampler(self.texture_sampler)];
+            let write_dst_set = vec![
+                WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i as usize])
+                    .dst_binding(0)
+                    .dst_array_element(0)
+                    .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(&buffer_info),
+                WriteDescriptorSet::default()
+                    .dst_set(self.descriptor_sets[i as usize])
+                    .dst_binding(1)
+                    .dst_array_element(0)
+                    .descriptor_type(DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&image_info),
+            ];
+            warn!("12345");
             unsafe {
                 self.device
                     .as_ref()
                     .unwrap()
                     .update_descriptor_sets(&write_dst_set, &[]);
             }
+            warn!("what");
         }
         info!("Descriptor Set has been created!");
         Ok(self)
@@ -1484,8 +1537,12 @@ impl Configuration {
 
             uniform_buffers: self.uniform_buffers.clone(),
             uniform_buffer_memory: self.uniform_buffer_memory.clone(),
+
             texture_image: self.texture_image,
+            texture_image_view: self.texture_image_view,
             texture_image_memory: self.texture_image_memory,
+
+            texture_sampler: self.texture_sampler,
 
             width: self.width,
             height: self.height,

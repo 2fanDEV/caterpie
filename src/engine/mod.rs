@@ -49,6 +49,10 @@ impl Engine {
             .unwrap()
             .create_texture_image()
             .unwrap()
+            .create_texture_image_view()
+            .unwrap()
+            .create_texture_sampler()
+            .unwrap()
             .create_vertex_buffer()
             .unwrap()
             .create_index_buffer()
@@ -80,7 +84,7 @@ impl Engine {
 
         let device = self.configuration.device.as_ref().unwrap();
 
-        let model = Matrix4::from_axis_angle(vec3(0.0, 0.0, 1.0), Deg(85.0) * time * 2.0);
+        let model = Matrix4::from_axis_angle(vec3(0.0, 0.0, 1.0), Deg(85.0) * time * 0.5);
 
         let view = Matrix4::look_at_rh(
             point3(2.0, 2.0, 2.0),
