@@ -1,11 +1,21 @@
 use std::{
-    borrow::BorrowMut, fs::File, io::{Error, ErrorKind}
+    borrow::BorrowMut,
+    fs::File,
+    io::{Error, ErrorKind},
 };
 
 use anyhow::anyhow;
 use ash::{
     vk::{
-        self, AccessFlags, BorderColor, Buffer, BufferImageCopy, BufferMemoryBarrier, BufferUsageFlags, CommandBuffer, CommandPool, CompareOp, DependencyFlags, DeviceMemory, DeviceSize, Extent3D, Filter, Format, Image, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers, ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, MemoryAllocateInfo, MemoryBarrier, MemoryMapFlags, MemoryPropertyFlags, Offset3D, PhysicalDevice, PipelineStageFlags, Queue, QueueFamilyProperties, QueueFlags, SampleCountFlags, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, SharingMode, QUEUE_FAMILY_IGNORED
+        self, AccessFlags, BorderColor, Buffer, BufferImageCopy, BufferMemoryBarrier,
+        BufferUsageFlags, CommandBuffer, CommandPool, CompareOp, DependencyFlags, DeviceMemory,
+        DeviceSize, Extent3D, Filter, Format, Image, ImageAspectFlags, ImageCreateFlags,
+        ImageCreateInfo, ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers,
+        ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags, ImageView,
+        ImageViewCreateInfo, ImageViewType, MemoryAllocateInfo, MemoryBarrier, MemoryMapFlags,
+        MemoryPropertyFlags, Offset3D, PhysicalDevice, PipelineStageFlags, Queue,
+        QueueFamilyProperties, QueueFlags, SampleCountFlags, SamplerAddressMode, SamplerCreateInfo,
+        SamplerMipmapMode, SharingMode, QUEUE_FAMILY_IGNORED,
     },
     Device, Instance,
 };
@@ -17,7 +27,7 @@ use crate::engine::configuration::QueueFamilyIndices;
 use super::Configuration;
 
 #[derive(Debug, Clone, Copy)]
-struct Texture {
+pub struct Texture {
     width: u32,
     height: u32,
     channels: u32,
@@ -25,7 +35,7 @@ struct Texture {
 }
 
 impl Texture {
-    fn new(width: u32, height: u32, channels: u32, depth: u8) -> Texture {
+    pub fn new(width: u32, height: u32, channels: u32, depth: u8) -> Texture {
         Self {
             width,
             height,
@@ -50,7 +60,7 @@ impl Into<Extent3D> for Texture {
 impl Configuration {
     pub fn create_texture_image(&mut self) -> Result<&mut Configuration, Error> {
         let device = self.device.as_ref().unwrap();
-        let image = png::Decoder::new(match File::open("src/resources/texture.png") {
+        let image = png::Decoder::new(match File::open("src/resources/viking_room.png") {
             Ok(file) => file,
             Err(err) => {
                 return Err(err);
@@ -86,17 +96,15 @@ impl Configuration {
             device.unmap_memory(staging_buffer_memory);
         }
 
-        let (image, image_memory) = Self::create_image(
-            device,
-            self.instance.as_ref().unwrap(),
-            self.physical_device.unwrap(),
-            texture,
-            Format::R8G8B8A8_SRGB,
-            ImageTiling::OPTIMAL,
-            ImageUsageFlags::TRANSFER_DST | ImageUsageFlags::SAMPLED,
-            MemoryPropertyFlags::DEVICE_LOCAL,
-        )
-        .unwrap();
+        let (image, image_memory) = self
+            .create_image(
+                texture,
+                Format::R8G8B8A8_SRGB,
+                ImageTiling::OPTIMAL,
+                ImageUsageFlags::TRANSFER_DST | ImageUsageFlags::SAMPLED,
+                MemoryPropertyFlags::DEVICE_LOCAL,
+            )
+            .unwrap();
 
         self.texture_image = image;
         self.texture_image_memory = image_memory;
@@ -124,145 +132,16 @@ impl Configuration {
         Ok(self)
     }
 
-    fn create_image(
-        device: &Device,
-        instance: &Instance,
-        physical_device: PhysicalDevice,
-        texture: Texture,
-        format: Format,
-        tiling: ImageTiling,
-        usage: ImageUsageFlags,
-        properties: MemoryPropertyFlags,
-    ) -> Result<(Image, DeviceMemory), Error> {
-        let image_create_info = ImageCreateInfo::default()
-            .image_type(ImageType::TYPE_2D)
-            .extent(texture.into())
-            .mip_levels(1)
-            .array_layers(1)
-            .format(format)
-            .tiling(tiling)
-            .initial_layout(ImageLayout::UNDEFINED)
-            .usage(usage)
-            .samples(SampleCountFlags::TYPE_1)
-            .flags(ImageCreateFlags::empty())
-            .sharing_mode(SharingMode::EXCLUSIVE);
-        unsafe {
-            let image = device.create_image(&image_create_info, None).unwrap();
-
-            let memory_requirements = device.get_image_memory_requirements(image);
-
-            let memory_allocate_info = MemoryAllocateInfo::default()
-                .allocation_size(memory_requirements.size)
-                .memory_type_index(
-                    Self::find_memory_type(
-                        instance,
-                        physical_device,
-                        memory_requirements.memory_type_bits,
-                        properties,
-                    )
-                    .unwrap(),
-                );
-
-            let image_memory = device.allocate_memory(&memory_allocate_info, None).unwrap();
-            device.bind_image_memory(image, image_memory, 0).unwrap();
-
-            Ok((image, image_memory))
-        }
-    }
-
-    fn transition_image_layout(
-        &self,
-        image: Image,
-        format: Format,
-        old_image_layout: ImageLayout,
-        new_image_layout: ImageLayout,
-    ) -> Result<(), anyhow::Error> {
-        let command = self.single_time_command().unwrap();
-
-        let (src_access_mask, dst_access_mask, src_stage_mask, dst_stage_mask) =
-            match (old_image_layout, new_image_layout) {
-                (ImageLayout::UNDEFINED, ImageLayout::TRANSFER_DST_OPTIMAL) => (
-                    AccessFlags::empty(),
-                    AccessFlags::TRANSFER_WRITE,
-                    PipelineStageFlags::TOP_OF_PIPE,
-                    PipelineStageFlags::TRANSFER,
-                ),
-                (ImageLayout::TRANSFER_DST_OPTIMAL, ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
-                    AccessFlags::TRANSFER_WRITE,
-                    AccessFlags::SHADER_READ,
-                    PipelineStageFlags::TRANSFER,
-                    PipelineStageFlags::FRAGMENT_SHADER,
-                ),
-                _ => return Err(anyhow!("Unsupported image layout transition")),
-            };
-
-        let sub_resource_range = ImageSubresourceRange::default()
-            .aspect_mask(ImageAspectFlags::COLOR)
-            .base_mip_level(0)
-            .level_count(1)
-            .base_array_layer(0)
-            .layer_count(1);
-
-        let pipeline = vec![ImageMemoryBarrier::default()
-            .old_layout(old_image_layout)
-            .new_layout(new_image_layout)
-            .src_queue_family_index(QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
-            .image(image)
-            .subresource_range(sub_resource_range)
-            .src_access_mask(src_access_mask)
-            .dst_access_mask(dst_access_mask)];
-
-        unsafe {
-            self.device.as_ref().unwrap().cmd_pipeline_barrier(
-                command,
-                src_stage_mask,
-                dst_stage_mask,
-                DependencyFlags::empty(),
-                &[] as &[MemoryBarrier],
-                &[] as &[BufferMemoryBarrier],
-                &pipeline,
-            )
-        };
-
-        self.end_single_time_command(command);
-        Ok(())
-    }
-
-    fn copy_buffer_to_image(&self, buffer: Buffer, image: Image, texture: Texture) {
-        let command_buffer = self.single_time_command().unwrap();
-
-        let image_subresource_range = ImageSubresourceLayers::default()
-            .aspect_mask(ImageAspectFlags::COLOR)
-            .mip_level(0)
-            .base_array_layer(0)
-            .layer_count(1);
-
-        let region = BufferImageCopy::default()
-            .buffer_offset(0)
-            .buffer_row_length(0)
-            .buffer_image_height(0)
-            .image_subresource(image_subresource_range)
-            .image_offset(Offset3D::default().x(0).y(0).z(0))
-            .image_extent(texture.into());
-
-        unsafe {
-            self.device.as_ref().unwrap().cmd_copy_buffer_to_image(
-                command_buffer,
-                buffer,
-                image,
-                ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[region],
-            )
-        };
-        self.end_single_time_command(command_buffer);
-    }
-
     pub fn create_texture_image_view(&mut self) -> Result<&mut Configuration, ()> {
-        self.texture_image_view = self.clone()
-            .create_image_view(&self.texture_image, Format::R8G8B8A8_SRGB)
+        self.texture_image_view = self
+            .clone()
+            .create_image_view(
+                &self.texture_image,
+                Format::R8G8B8A8_SRGB,
+                ImageAspectFlags::COLOR,
+            )
             .unwrap();
-
+        debug!("Texture Image View created");
         Ok(self)
     }
 
@@ -291,9 +170,9 @@ impl Configuration {
             .mip_lod_bias(0.0)
             .min_lod(0.0)
             .max_lod(0.0);
-        
+
         self.texture_sampler = unsafe { device.create_sampler(&sampler_info, None).unwrap() };
-        
+        debug!("Texture Sampler created");
         Ok(self)
     }
 }

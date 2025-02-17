@@ -7,13 +7,13 @@ use cgmath::{Vector2, Vector3};
 
 #[derive(Debug, Clone)]
 pub struct Vertex {
-    pos: Vector2<f32>,
+    pos: Vector3<f32>,
     color: Vector3<f32>,
     texture_coords: Vector2<f32>,
 }
 
 impl Vertex {
-    pub fn new(pos: Vector2<f32>, color: Vector3<f32>, texture_coords: Vector2<f32>) -> Self {
+    pub fn new(pos: Vector3<f32>, color: Vector3<f32>, texture_coords: Vector2<f32>) -> Self {
         Vertex {
             pos,
             color,
@@ -34,7 +34,7 @@ impl Vertex {
         attribute_descriptons[0] = attribute_descriptons[0]
             .binding(0)
             .location(0)
-            .format(Format::R32G32_SFLOAT)
+            .format(Format::R32G32B32_SFLOAT)
             .offset(offset_of!(Vertex, pos) as u32);
 
         attribute_descriptons[1] = attribute_descriptons[1]

@@ -1,4 +1,5 @@
 use core::time;
+use std::process::exit;
 use std::{os::unix::thread, thread::sleep};
 
 use log::debug;
@@ -34,7 +35,7 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         let window_attributes = WindowAttributes::default()
             .with_inner_size(PhysicalSize::new(1920, 1080))
-            .with_decorations(false);
+            .with_decorations(true);
         self.window = Some(event_loop.create_window(window_attributes).unwrap());
         self.engine = Some(Engine::init(&self.window.as_ref().unwrap()).unwrap());
         debug!("App resumed");
@@ -50,6 +51,13 @@ impl ApplicationHandler for App {
             Some(engine) => {
                 engine.draw_frame();
                 match event {
+                    event::WindowEvent::Destroyed => {
+                        engine.destroy();
+                    }
+                    event::WindowEvent::CloseRequested => {
+                        engine.destroy();
+                        exit(0);
+                    }
                     event::WindowEvent::Resized(size) => {
                         engine.window_resized(size);
                     }

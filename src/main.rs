@@ -11,7 +11,6 @@ fn main() {
     let event_loop = EventLoop::new().unwrap();
     let _ = env_logger::builder().filter_level(LevelFilter::Debug).try_init();
     
-    info!("test");
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
     event_loop.run_app(&mut app).unwrap();
     println!("Hello, world!");

@@ -1,13 +1,11 @@
 use std::ops::Add;
 use std::time::Instant;
 
-use ash::vk::{
-    Handle, MemoryMapFlags, PipelineStageFlags, PresentInfoKHR, SubmitInfo,
-};
 use ash::vk::CommandBufferResetFlags;
+use ash::vk::{Handle, MemoryMapFlags, PipelineStageFlags, PresentInfoKHR, SubmitInfo};
 use cgmath::{perspective, point3, vec3, Deg, Matrix4};
 use configuration::buffer_types::uniform_buffer_types::UniformBufferObject;
-use log::error;
+use log::{debug, error};
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
@@ -43,15 +41,19 @@ impl Engine {
             .unwrap()
             .create_graphics_pipeline()
             .unwrap()
-            .create_framebuffers()
-            .unwrap()
             .create_command_pool()
+            .unwrap()
+            .create_depth_resources()
+            .unwrap()
+            .create_framebuffers()
             .unwrap()
             .create_texture_image()
             .unwrap()
             .create_texture_image_view()
             .unwrap()
             .create_texture_sampler()
+            .unwrap()
+            .load_model()
             .unwrap()
             .create_vertex_buffer()
             .unwrap()
@@ -80,7 +82,7 @@ impl Engine {
     }
 
     fn update_uniform_buffer(&mut self, current_image: u32) {
-        let time = self.start.unwrap().elapsed().as_secs_f32();
+        let time= self.start.unwrap().elapsed().as_secs_f32();
 
         let device = self.configuration.device.as_ref().unwrap();
 
@@ -166,10 +168,8 @@ impl Engine {
             device
                 .reset_command_buffer(command_buffer, CommandBufferResetFlags::default())
                 .unwrap();
-
             self.configuration
                 .record_command_buffer(&command_buffer, next_image_index);
-
             let wait_semaphores =
                 vec![self.configuration.image_available_semaphores[current_frame]];
             let signal_semaphores =
@@ -186,6 +186,7 @@ impl Engine {
                 .command_buffers(&command_buffer)
                 .signal_semaphores(&signal_semaphores)];
             let image_indices = vec![next_image_index];
+            
             device
                 .queue_submit(
                     self.configuration.presentation_queue.unwrap(),
@@ -198,7 +199,6 @@ impl Engine {
                 .wait_semaphores(&signal_semaphores)
                 .swapchains(&swapchains)
                 .image_indices(&image_indices);
-
             match self
                 .configuration
                 .swapchain_device
@@ -227,5 +227,9 @@ impl Engine {
 
             self.frame = (self.frame.add(1)) % MAX_FLIGHT_FENCES;
         };
+    }
+
+    pub fn destroy(&mut self) {
+        self.configuration.destroy();
     }
 }

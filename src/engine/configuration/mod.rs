@@ -1,19 +1,24 @@
 use std::{
     ffi::{c_void, CStr, CString},
-    io::Cursor,
+    fs::File,
+    io::{BufReader, Cursor},
     path::Path,
 };
 
+use anyhow::Error;
 use ash::vk::{
-    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferUsageFlags, ClearColorValue,
-    ClearValue, CommandBufferBeginInfo, CommandBufferUsageFlags, DescriptorBufferInfo,
-    DescriptorImageInfo, DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
-    DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
-    DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory, DeviceSize, Fence,
-    FenceCreateFlags, FenceCreateInfo, IndexType, MemoryAllocateInfo, MemoryMapFlags,
-    MemoryPropertyFlags, PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineStageFlags,
-    RenderPassBeginInfo, Sampler, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo,
-    SubpassContents, SubpassDependency, WriteDescriptorSet, SUBPASS_EXTERNAL,
+    AccessFlags, Buffer, BufferCopy, BufferCreateInfo, BufferImageCopy, BufferMemoryBarrier,
+    BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue, CommandBufferBeginInfo,
+    CommandBufferUsageFlags, CompareOp, DependencyFlags, DescriptorBufferInfo, DescriptorImageInfo,
+    DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize, DescriptorSet,
+    DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
+    DescriptorSetLayoutCreateInfo, DescriptorType, DeviceMemory, DeviceSize, Extent3D, Fence,
+    FenceCreateFlags, FenceCreateInfo, FormatFeatureFlags, ImageCreateFlags, ImageCreateInfo,
+    ImageMemoryBarrier, ImageSubresourceLayers, ImageTiling, ImageType, IndexType,
+    MemoryAllocateInfo, MemoryBarrier, MemoryMapFlags, MemoryPropertyFlags, Offset3D,
+    PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineStageFlags, RenderPassBeginInfo,
+    Sampler, Semaphore, SemaphoreCreateFlags, SemaphoreCreateInfo, SubmitInfo, SubpassContents,
+    SubpassDependency, WriteDescriptorSet, QUEUE_FAMILY_IGNORED, SUBPASS_EXTERNAL,
 };
 use ash::{
     util::read_spv,
@@ -45,16 +50,17 @@ use ash::{
 };
 
 use buffer_types::{uniform_buffer_types::UniformBufferObject, vertex::Vertex};
-use cgmath::{vec2, vec3, Matrix4, Zero};
+use cgmath::{vec2, vec3, Matrix4, Vector3, Zero};
 use log::*;
+use textures::Texture;
+use tobj::{LoadOptions, Model};
 use winit::{
     dpi::PhysicalSize,
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
-    window::Window,
+    window::{self, Window},
 };
 
 use crate::utils;
-
 pub mod buffer_types;
 mod textures;
 pub const MAX_FLIGHT_FENCES: u32 = 3;
@@ -104,7 +110,7 @@ pub struct Configuration {
     pub uniform_buffers: Vec<Buffer>,
     pub uniform_buffer_memory: Vec<DeviceMemory>,
 
-    indices: Vec<u16>,
+    indices: Vec<u32>,
     index_buffer: Buffer,
     index_buffer_memory: DeviceMemory,
     width: u32,
@@ -113,12 +119,15 @@ pub struct Configuration {
     texture_image: Image,
     texture_image_view: ImageView,
     texture_image_memory: DeviceMemory,
+    texture_sampler: Sampler,
+
+    depth_image: Image,
+    depth_image_view: ImageView,
+    depth_image_memory: DeviceMemory,
 
     descriptor_pool: DescriptorPool,
     descriptor_set_layout: Vec<DescriptorSetLayout>,
     descriptor_sets: Vec<DescriptorSet>,
-
-    texture_sampler: Sampler,
 
     pub window_resized: bool,
 
@@ -214,7 +223,7 @@ impl SwapchainSupportDetails {
 
     pub fn choose_swap_chain_format(&self) -> SurfaceFormatKHR {
         let surface_format_khr = self.formats.iter().find(|format| {
-            format.format == Format::R8G8B8A8_UNORM
+            format.format == Format::R8G8B8A8_SRGB
                 && format.color_space.eq(&ColorSpaceKHR::SRGB_NONLINEAR)
         });
 
@@ -222,7 +231,7 @@ impl SwapchainSupportDetails {
             return *surface_format_khr.unwrap();
         } else {
             SurfaceFormatKHR::default()
-                .format(Format::R8G8B8A8_UNORM)
+                .format(Format::R8G8B8A8_SRGB)
                 .color_space(ColorSpaceKHR::SRGB_NONLINEAR)
         }
     }
@@ -673,14 +682,61 @@ impl Configuration {
         Ok(self)
     }
 
+    fn create_image(
+        &self,
+        texture: Texture,
+        format: Format,
+        tiling: ImageTiling,
+        usage: ImageUsageFlags,
+        properties: MemoryPropertyFlags,
+    ) -> Result<(Image, DeviceMemory), Error> {
+        let device = self.device.as_ref().unwrap();
+        let instance = self.instance.as_ref().unwrap();
+        let image_create_info = ImageCreateInfo::default()
+            .image_type(ImageType::TYPE_2D)
+            .extent(texture.into())
+            .mip_levels(1)
+            .array_layers(1)
+            .format(format)
+            .tiling(tiling)
+            .initial_layout(ImageLayout::UNDEFINED)
+            .usage(usage)
+            .samples(SampleCountFlags::TYPE_1)
+            .flags(ImageCreateFlags::empty())
+            .sharing_mode(SharingMode::EXCLUSIVE);
+        unsafe {
+            let image = device.create_image(&image_create_info, None).unwrap();
+
+            let memory_requirements = device.get_image_memory_requirements(image);
+
+            let memory_allocate_info = MemoryAllocateInfo::default()
+                .allocation_size(memory_requirements.size)
+                .memory_type_index(
+                    Self::find_memory_type(
+                        instance,
+                        self.physical_device.unwrap(),
+                        memory_requirements.memory_type_bits,
+                        properties,
+                    )
+                    .unwrap(),
+                );
+
+            let image_memory = device.allocate_memory(&memory_allocate_info, None).unwrap();
+            device.bind_image_memory(image, image_memory, 0).unwrap();
+
+            Ok((image, image_memory))
+        }
+    }
+
     fn create_image_view(
-        &mut self,
+        &self,
         image: &Image,
         format: Format,
+        aspect_flags: ImageAspectFlags,
     ) -> Result<ImageView, ash::vk::Result> {
         let device = self.device.as_ref().unwrap();
         let sub_resource_range = ImageSubresourceRange::default()
-            .aspect_mask(ImageAspectFlags::COLOR)
+            .aspect_mask(aspect_flags)
             .base_mip_level(0)
             .level_count(1)
             .base_array_layer(0)
@@ -689,12 +745,13 @@ impl Configuration {
         let create_info = ImageViewCreateInfo::default()
             .image(*image)
             .view_type(ImageViewType::TYPE_2D)
-            .format(Format::R8G8B8A8_SRGB)
+            .format(format)
             .subresource_range(sub_resource_range);
 
         let image_view = unsafe { device.create_image_view(&create_info, None) };
         image_view
     }
+
     pub fn create_swapchain_image_views(&mut self) -> Result<&mut Configuration, &str> {
         let device = self.device.as_ref().unwrap();
         /* let component_mapping = ComponentMapping::default()
@@ -715,8 +772,12 @@ impl Configuration {
             .swapchain_images
             .iter()
             .map(|image| {
-                self.create_image_view(image, self.surface_format.unwrap().format)
-                    .unwrap()
+                self.create_image_view(
+                    image,
+                    self.surface_format.unwrap().format,
+                    ImageAspectFlags::COLOR,
+                )
+                .unwrap()
             })
             .collect::<Vec<ImageView>>();
         Ok(self)
@@ -749,7 +810,7 @@ impl Configuration {
     }
 
     pub fn create_render_pass(&mut self) -> Result<&mut Configuration, &str> {
-        let attachment_description = vec![AttachmentDescription::default()
+        let mut attachment_description = vec![AttachmentDescription::default()
             .format(self.surface_format.as_ref().unwrap().format)
             .samples(SampleCountFlags::TYPE_1)
             .load_op(AttachmentLoadOp::CLEAR)
@@ -763,17 +824,42 @@ impl Configuration {
             .attachment(0)
             .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
 
+        let depth_stencil_attachment = AttachmentDescription::default()
+            .format(self.find_depth_format())
+            .samples(SampleCountFlags::TYPE_1)
+            .load_op(AttachmentLoadOp::CLEAR)
+            .store_op(AttachmentStoreOp::DONT_CARE)
+            .stencil_load_op(AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(AttachmentStoreOp::DONT_CARE)
+            .initial_layout(ImageLayout::UNDEFINED)
+            .final_layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+        attachment_description.push(depth_stencil_attachment);
+
+        let depth_stencil_attachment_ref = AttachmentReference::default()
+            .attachment(1)
+            .layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
         let subpass_description = vec![SubpassDescription::default()
             .pipeline_bind_point(PipelineBindPoint::GRAPHICS)
-            .color_attachments(&attachment_reference)];
+            .color_attachments(&attachment_reference)
+            .depth_stencil_attachment(&depth_stencil_attachment_ref)];
 
         let subpass_dependency = vec![SubpassDependency::default()
             .src_subpass(SUBPASS_EXTERNAL)
             .dst_subpass(0)
-            .src_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .dst_stage_mask(PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .src_access_mask(AccessFlags::empty())
-            .dst_access_mask(AccessFlags::COLOR_ATTACHMENT_WRITE)];
+            .src_stage_mask(
+                PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                    | PipelineStageFlags::LATE_FRAGMENT_TESTS,
+            )
+            .dst_stage_mask(
+                PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                    | PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+            )
+            .src_access_mask(AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE)
+            .dst_access_mask(
+                AccessFlags::COLOR_ATTACHMENT_WRITE | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            )];
 
         let render_pass_create_info = RenderPassCreateInfo::default()
             .attachments(&attachment_description)
@@ -800,15 +886,6 @@ impl Configuration {
         let vertex_shader_module = self
             .create_shader_module(Path::new("src/assets/vertices.spv").to_str().unwrap())
             .unwrap();
-
-        self.vertices = vec![
-            Vertex::new(vec2(-0.5, -0.5), vec3(1.0, 0.0, 0.0), vec2(1.0, 0.0)),
-            Vertex::new(vec2(0.5, -0.5), vec3(0.0, 1.0, 0.0), vec2(0.0,0.0)),
-            Vertex::new(vec2(0.5, 0.5), vec3(0.0, 0.0, 1.0), vec2(0.0, 1.0)),
-            Vertex::new(vec2(-0.5, 0.5), vec3(1.0, 1.0, 1.0), vec2(1.0,1.0)),
-        ];
-
-        self.indices = vec![0, 1, 2, 2, 3, 0];
 
         let name_main: &CStr = c"main";
         let frag_shader_create_info = PipelineShaderStageCreateInfo::default()
@@ -891,6 +968,14 @@ impl Configuration {
             .attachments(&pipeline_color_blend_attachment_state)
             .blend_constants([0.0, 0.0, 0.0, 0.0]); // OPTIONAL
 
+        let depth_stencil_state = PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_bounds_test_enable(false)
+            .min_depth_bounds(0.0)
+            .max_depth_bounds(1.0)
+            .depth_compare_op(CompareOp::LESS);
+
         let pipeline_layout_create_info =
             PipelineLayoutCreateInfo::default().set_layouts(&self.descriptor_set_layout);
         unsafe {
@@ -901,8 +986,6 @@ impl Configuration {
                 .create_pipeline_layout(&pipeline_layout_create_info, None)
                 .unwrap();
 
-            let depth_stencil_state = PipelineDepthStencilStateCreateInfo::default();
-
             let graphics_pipeline_create_infos = vec![GraphicsPipelineCreateInfo::default()
                 .vertex_input_state(&vertex_input_state)
                 .input_assembly_state(&input_assembly_create_info)
@@ -912,7 +995,6 @@ impl Configuration {
                 .color_blend_state(&color_blend_state_create_info)
                 .dynamic_state(&pipeline_dynamic_states_create_info)
                 .render_pass(self.render_pass.unwrap())
-                .base_pipeline_index(-1)
                 .layout(self.pipeline_layout)
                 .base_pipeline_handle(Pipeline::null())
                 .stages(&pipeline_shader_create_infos)
@@ -937,8 +1019,7 @@ impl Configuration {
     pub fn create_framebuffers(&mut self) -> Result<&mut Configuration, &str> {
         let extent = self.extent.unwrap();
         for image_view in self.image_views.clone() {
-            let attachments = [image_view];
-
+            let attachments = [image_view, self.depth_image_view];
             let framebuffer_create_info = FramebufferCreateInfo::default()
                 .attachments(&attachments)
                 .render_pass(self.render_pass.unwrap())
@@ -1121,11 +1202,19 @@ impl Configuration {
             .get(image_index as usize)
             .expect("Failed to get framebuffer at given image index");
 
-        let clear_color = vec![ClearValue {
-            color: ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
+        let clear_color = vec![
+            ClearValue {
+                color: ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
             },
-        }];
+            ClearValue {
+                depth_stencil: ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            },
+        ];
 
         let render_pass_begin_info = RenderPassBeginInfo::default()
             .render_pass(self.render_pass.unwrap())
@@ -1154,7 +1243,7 @@ impl Configuration {
             let offsets = vec![0];
 
             device.cmd_bind_vertex_buffers(*command_buffer, 0, &vertex_buffers, &offsets);
-            device.cmd_bind_index_buffer(*command_buffer, self.index_buffer, 0, IndexType::UINT16);
+            device.cmd_bind_index_buffer(*command_buffer, self.index_buffer, 0, IndexType::UINT32);
             device.cmd_bind_descriptor_sets(
                 *command_buffer,
                 PipelineBindPoint::GRAPHICS,
@@ -1167,6 +1256,41 @@ impl Configuration {
             device.cmd_end_render_pass(*command_buffer);
             device.end_command_buffer(*command_buffer).unwrap();
         }
+    }
+
+    pub fn load_model(&mut self) -> Result<&mut Configuration, Error> {
+        let mut reader = BufReader::new(File::open("src/resources/viking_room.obj")?);
+        let (model_buf, _) = tobj::load_obj_buf(
+            &mut reader,
+            &tobj::LoadOptions {
+                triangulate: true,
+                ..Default::default()
+            },
+            |_| Ok(Default::default()),
+        )?;
+        for model in &model_buf {
+            for index in &model.mesh.indices {
+                let pos_offset = (3*index) as usize;
+                let tex_coord_offset = (2 * index) as usize;
+                let vertex = Vertex::new(
+                    vec3(
+                        model.mesh.positions[pos_offset],
+                        model.mesh.positions[pos_offset + 1],
+                        model.mesh.positions[pos_offset + 2]
+                    ),
+                    vec3(1.0,1.0, 1.0),
+                    vec2(
+                        model.mesh.texcoords[tex_coord_offset],
+                        model.mesh.texcoords[tex_coord_offset+1]
+                    )
+                );
+                self.vertices.push(vertex);
+                self.indices.push(self.indices.len() as u32);
+            }
+
+        }
+
+        Ok(self)
     }
 
     fn find_memory_type(
@@ -1258,11 +1382,11 @@ impl Configuration {
             let data = device
                 .map_memory(staging_memory, 0, buffer_size, MemoryMapFlags::empty())
                 .unwrap();
-            buffer_type
-                .as_ptr()
-                .copy_to_nonoverlapping(data.cast(), buffer_size as usize);
+
+            std::ptr::copy_nonoverlapping(buffer_type.as_ptr(), data.cast(), buffer_size as usize);
 
             device.unmap_memory(staging_memory);
+
             let buffer = Self::allocate_buffer(
                 &instance,
                 *physical_device,
@@ -1282,7 +1406,6 @@ impl Configuration {
     }
 
     pub fn create_vertex_buffer(&mut self) -> Result<&mut Configuration, ()> {
-        debug!("CREATING VERTEX BUFFER");
         (self.vertex_buffer, self.vertex_buffer_memory) = self
             .create_buffer(
                 self.instance.as_ref().unwrap(),
@@ -1473,17 +1596,199 @@ impl Configuration {
                     .descriptor_type(DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&image_info),
             ];
-            warn!("12345");
             unsafe {
                 self.device
                     .as_ref()
                     .unwrap()
                     .update_descriptor_sets(&write_dst_set, &[]);
             }
-            warn!("what");
         }
         info!("Descriptor Set has been created!");
         Ok(self)
+    }
+
+    pub fn create_depth_resources(&mut self) -> Result<&mut Configuration, ()> {
+        let extent = self.extent.unwrap();
+        let texture = Texture::new(extent.width, extent.height, 0, 1);
+        let depth_format = self.find_depth_format();
+        (self.depth_image, self.depth_image_memory) = self
+            .create_image(
+                texture,
+                depth_format,
+                ImageTiling::OPTIMAL,
+                ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                MemoryPropertyFlags::DEVICE_LOCAL,
+            )
+            .unwrap();
+
+        debug!("{:?}", self.depth_image);
+        self.depth_image_view = self
+            .create_image_view(&self.depth_image, depth_format, ImageAspectFlags::DEPTH)
+            .unwrap();
+        self.transition_image_layout(
+            self.depth_image,
+            depth_format,
+            ImageLayout::UNDEFINED,
+            ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        )
+        .unwrap();
+        Ok(self)
+    }
+
+    fn has_stencil_component(format: Format) -> bool {
+        debug!(
+            "{}",
+            format.eq(&Format::D32_SFLOAT_S8_UINT) || format.eq(&Format::D24_UNORM_S8_UINT)
+        );
+        format.eq(&Format::D32_SFLOAT_S8_UINT) || format.eq(&Format::D24_UNORM_S8_UINT)
+    }
+
+    fn find_depth_format(&self) -> Format {
+        return self
+            .find_supported_format(
+                vec![
+                    Format::D32_SFLOAT,
+                    Format::D32_SFLOAT_S8_UINT,
+                    Format::D24_UNORM_S8_UINT,
+                ],
+                ImageTiling::OPTIMAL,
+                FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT,
+            )
+            .unwrap();
+    }
+
+    fn find_supported_format(
+        &self,
+        formats: Vec<Format>,
+        tiling: ImageTiling,
+        format_feature_flags: FormatFeatureFlags,
+    ) -> Option<Format> {
+        for format in formats {
+            let physical_device_format_properties = unsafe {
+                self.instance
+                    .as_ref()
+                    .unwrap()
+                    .get_physical_device_format_properties(self.physical_device.unwrap(), format)
+            };
+
+            if tiling.eq(&ImageTiling::LINEAR)
+                && (physical_device_format_properties.linear_tiling_features & format_feature_flags)
+                    == format_feature_flags
+            {
+                return Some(format);
+            } else if tiling.eq(&ImageTiling::OPTIMAL)
+                && (physical_device_format_properties.optimal_tiling_features
+                    & format_feature_flags)
+                    == format_feature_flags
+            {
+                return Some(format);
+            }
+        }
+        None
+    }
+
+    fn transition_image_layout(
+        &self,
+        image: Image,
+        format: Format,
+        old_image_layout: ImageLayout,
+        new_image_layout: ImageLayout,
+    ) -> Result<(), &str> {
+        let command = self.single_time_command().unwrap();
+
+        let aspect_flag = if new_image_layout == ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL {
+            if Self::has_stencil_component(format) {
+                ImageAspectFlags::DEPTH | ImageAspectFlags::STENCIL
+            } else {
+                ImageAspectFlags::DEPTH
+            }
+        } else {
+            ImageAspectFlags::COLOR
+        };
+        let (src_access_mask, dst_access_mask, src_stage_mask, dst_stage_mask) =
+            match (old_image_layout, new_image_layout) {
+                (ImageLayout::UNDEFINED, ImageLayout::TRANSFER_DST_OPTIMAL) => (
+                    AccessFlags::empty(),
+                    AccessFlags::TRANSFER_WRITE,
+                    PipelineStageFlags::TOP_OF_PIPE,
+                    PipelineStageFlags::TRANSFER,
+                ),
+                (ImageLayout::TRANSFER_DST_OPTIMAL, ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
+                    AccessFlags::TRANSFER_WRITE,
+                    AccessFlags::SHADER_READ,
+                    PipelineStageFlags::TRANSFER,
+                    PipelineStageFlags::FRAGMENT_SHADER,
+                ),
+                (ImageLayout::UNDEFINED, ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL) => (
+                    AccessFlags::empty(),
+                    AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+                        | AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                    PipelineStageFlags::TOP_OF_PIPE,
+                    PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                ),
+                _ => return Err("Unsupported image layout transition"),
+            };
+
+        let sub_resource_range = ImageSubresourceRange::default()
+            .aspect_mask(aspect_flag)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let pipeline = vec![ImageMemoryBarrier::default()
+            .old_layout(old_image_layout)
+            .new_layout(new_image_layout)
+            .src_queue_family_index(QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(sub_resource_range)
+            .src_access_mask(src_access_mask)
+            .dst_access_mask(dst_access_mask)];
+
+        unsafe {
+            self.device.as_ref().unwrap().cmd_pipeline_barrier(
+                command,
+                src_stage_mask,
+                dst_stage_mask,
+                DependencyFlags::empty(),
+                &[] as &[MemoryBarrier],
+                &[] as &[BufferMemoryBarrier],
+                &pipeline,
+            )
+        };
+
+        self.end_single_time_command(command);
+        Ok(())
+    }
+
+    fn copy_buffer_to_image(&self, buffer: Buffer, image: Image, texture: Texture) {
+        let command_buffer = self.single_time_command().unwrap();
+
+        let image_subresource_range = ImageSubresourceLayers::default()
+            .aspect_mask(ImageAspectFlags::COLOR)
+            .mip_level(0)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let region = BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(image_subresource_range)
+            .image_offset(Offset3D::default().x(0).y(0).z(0))
+            .image_extent(texture.into());
+
+        unsafe {
+            self.device.as_ref().unwrap().cmd_copy_buffer_to_image(
+                command_buffer,
+                buffer,
+                image,
+                ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            )
+        };
+        self.end_single_time_command(command_buffer);
     }
 
     pub fn build(&mut self) -> Configuration {
@@ -1541,8 +1846,11 @@ impl Configuration {
             texture_image: self.texture_image,
             texture_image_view: self.texture_image_view,
             texture_image_memory: self.texture_image_memory,
-
             texture_sampler: self.texture_sampler,
+
+            depth_image: self.depth_image.clone(),
+            depth_image_memory: self.depth_image_memory.clone(),
+            depth_image_view: self.depth_image_view.clone(),
 
             width: self.width,
             height: self.height,
@@ -1566,9 +1874,9 @@ impl Configuration {
                 .unwrap()
                 .create_render_pass()
                 .unwrap()
-                .create_render_pass()
-                .unwrap()
                 .create_graphics_pipeline()
+                .unwrap()
+                .create_depth_resources()
                 .unwrap()
                 .create_framebuffers()
                 .unwrap()
@@ -1582,6 +1890,9 @@ impl Configuration {
     fn destroy_swapchain(&mut self) {
         unsafe {
             let device = self.device.as_ref().unwrap();
+            device.destroy_image_view(self.depth_image_view, None);
+            device.free_memory(self.depth_image_memory, None);
+            device.destroy_image(self.depth_image, None);
             self.uniform_buffers
                 .iter()
                 .for_each(|b| device.destroy_buffer(*b, None));
@@ -1592,22 +1903,14 @@ impl Configuration {
                 .iter()
                 .for_each(|f| device.destroy_framebuffer(*f, None));
             self.framebuffers.clear();
-            self.device
-                .as_ref()
-                .unwrap()
-                .free_command_buffers(self.command_pool.unwrap(), &self.command_buffer);
-            self.device
-                .as_ref()
-                .unwrap()
-                .destroy_pipeline(self.graphics_pipelines[0], None);
-            self.device
-                .as_ref()
-                .unwrap()
-                .destroy_render_pass(self.render_pass.unwrap(), None);
+            device.free_command_buffers(self.command_pool.unwrap(), &self.command_buffer);
+            device.destroy_pipeline(self.graphics_pipelines[0], None);
+            device.destroy_render_pass(self.render_pass.unwrap(), None);
             self.image_views
                 .iter()
                 .for_each(|v| device.destroy_image_view(*v, None));
             self.image_views.clear();
+
             self.swapchain_device
                 .as_ref()
                 .unwrap()
@@ -1616,10 +1919,15 @@ impl Configuration {
                 .resize(self.swapchain_images.len(), Fence::null());
         }
     }
-}
 
-impl Drop for Configuration {
-    fn drop(&mut self) {
-        return;
+    pub fn destroy(&mut self) {
+        self.destroy_swapchain();
+        let device = self.device.as_ref().unwrap();
+        let instance = self.instance.as_ref().unwrap();
+        unsafe {
+            device.destroy_image(self.texture_image, None);
+            device.free_memory(self.texture_image_memory, None);
+            device.destroy_image_view(self.texture_image_view, None);
+        };
     }
 }
