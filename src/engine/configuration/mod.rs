@@ -346,7 +346,9 @@ impl Configuration {
             instance_extension_properties.push(KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME.as_ptr());
 
             for extension in entry_enumerated_instance_extensions {
-                instance_extension_properties.push(extension.extension_name.as_ptr());
+                if instance_extension_properties.contains(&extension.extension_name.as_ptr()) {
+                    instance_extension_properties.push(extension.extension_name.as_ptr());
+                }
             }
 
             match self.check_validation_layer_support() {
@@ -887,6 +889,21 @@ impl Configuration {
             .create_shader_module(Path::new("src/assets/vertices.spv").to_str().unwrap())
             .unwrap();
 
+       /* self.vertices = vec![
+            Vertex::new(vec3(-0.5, -0.5, 0.0), vec3(1.0, 0.0, 0.0), vec2(1.0, 0.0)),
+            Vertex::new(vec3(0.5, -0.5, 0.0), vec3(0.0, 1.0, 0.0), vec2(0.0, 0.0)),
+            Vertex::new(vec3(0.5, 0.5, 0.0), vec3(0.0, 0.0, 1.0), vec2(0.0, 1.0)),
+            Vertex::new(vec3(-0.5, 0.5, 0.0), vec3(1.0, 1.0, 1.0), vec2(1.0, 1.0)),
+            Vertex::new(vec3(-0.5, -0.5, -0.5), vec3(1.0, 0.0, 0.0), vec2(1.0, 0.0)),
+            Vertex::new(vec3(0.5, -0.5, -0.5), vec3(0.0, 1.0, 0.0), vec2(0.0, 0.0)),
+            Vertex::new(vec3(0.5, 0.5, -0.5), vec3(0.0, 0.0, 1.0), vec2(0.0, 1.0)),
+            Vertex::new(vec3(-0.5, 0.5, -0.5), vec3(1.0, 1.0, 1.0), vec2(1.0, 1.0)),
+        ];
+
+        self.indices = vec![0, 1, 2, 2, 3, 0,
+         4, 5, 6, 6, 7, 4,
+        ];
+        */
         let name_main: &CStr = c"main";
         let frag_shader_create_info = PipelineShaderStageCreateInfo::default()
             .module(fragment_shader_module)
@@ -1270,24 +1287,23 @@ impl Configuration {
         )?;
         for model in &model_buf {
             for index in &model.mesh.indices {
-                let pos_offset = (3*index) as usize;
+                let pos_offset = (3 * index) as usize;
                 let tex_coord_offset = (2 * index) as usize;
                 let vertex = Vertex::new(
                     vec3(
                         model.mesh.positions[pos_offset],
                         model.mesh.positions[pos_offset + 1],
-                        model.mesh.positions[pos_offset + 2]
+                        model.mesh.positions[pos_offset + 2],
                     ),
-                    vec3(1.0,1.0, 1.0),
+                    vec3(1.0, 1.0, 1.0),
                     vec2(
                         model.mesh.texcoords[tex_coord_offset],
-                        model.mesh.texcoords[tex_coord_offset+1]
-                    )
+                        1.0 - model.mesh.texcoords[tex_coord_offset + 1],
+                    ),
                 );
                 self.vertices.push(vertex);
                 self.indices.push(self.indices.len() as u32);
             }
-
         }
 
         Ok(self)
@@ -1369,29 +1385,32 @@ impl Configuration {
         let buffer_size = (size_of::<T>() * buffer_type.len()) as u64;
         let mut staging_memory = DeviceMemory::default();
         let mut buffer_memory = DeviceMemory::default();
+
         let staging_buffer = Self::allocate_buffer(
-            &instance,
+            instance,
             *physical_device,
             device,
-            buffer_size as u64,
+            buffer_size,
             BufferUsageFlags::TRANSFER_SRC,
             memory_property_flags,
             &mut staging_memory,
         );
+
         unsafe {
             let data = device
                 .map_memory(staging_memory, 0, buffer_size, MemoryMapFlags::empty())
-                .unwrap();
+                .expect("Failed to map memory");
 
-            std::ptr::copy_nonoverlapping(buffer_type.as_ptr(), data.cast(), buffer_size as usize);
+            // Fix: Use std::ptr::copy_nonoverlapping for raw memory copy
+            std::ptr::copy_nonoverlapping(buffer_type.as_ptr(), data as *mut T, buffer_type.len());
 
             device.unmap_memory(staging_memory);
 
             let buffer = Self::allocate_buffer(
-                &instance,
+                instance,
                 *physical_device,
                 device,
-                buffer_size as u64,
+                buffer_size,
                 BufferUsageFlags::TRANSFER_DST | buffer_usage_flags,
                 memory_property_flags,
                 &mut buffer_memory,
@@ -1399,8 +1418,10 @@ impl Configuration {
 
             self.copy_buffer(staging_buffer, buffer, buffer_size);
 
+            // Cleanup should only happen after GPU is done using the buffer
             device.destroy_buffer(staging_buffer, None);
             device.free_memory(staging_memory, None);
+
             Ok((buffer, buffer_memory))
         }
     }
@@ -1881,6 +1902,10 @@ impl Configuration {
                 .create_framebuffers()
                 .unwrap()
                 .create_uniform_buffer()
+                .unwrap()
+                .create_descriptor_pool()
+                .unwrap()
+                .create_descriptor_sets()
                 .unwrap()
                 .create_command_buffer()
                 .unwrap();
